@@ -32,6 +32,7 @@ class BacktestingDataProvider(MarketDataProvider):
         self.prices = {}
         self._time = None
         self.trading_rules = {}
+        self.funding_feeds = {}  # Add funding rate feeds storage
         self.conn_settings = AllConnectorSettings.get_connector_settings()
         self.connectors = LazyDict[str, Optional[ConnectorBase]](
             lambda name: self.get_connector(name) if (
@@ -181,3 +182,116 @@ class BacktestingDataProvider(MarketDataProvider):
         df.sort_index(inplace=True)
         df.index.name = index_name
         return df
+
+    def load_funding_rate_data(self, funding_data_path):
+        """
+        Load historical funding rate data from parquet files.
+
+        Args:
+            funding_data_path: Path to directory containing funding rate parquet files
+        """
+        from pathlib import Path
+        from hummingbot.core.data_type.funding_info import FundingInfo
+
+        funding_path = Path(funding_data_path)
+
+        if not funding_path.exists():
+            logger.warning(f"Funding data directory {funding_path} does not exist")
+            return
+
+        parquet_files = list(funding_path.glob("*.parquet"))
+
+        if not parquet_files:
+            logger.warning(f"No parquet files found in {funding_path}")
+            return
+
+        logger.info(f"Loading funding rate data from {len(parquet_files)} file(s)...")
+
+        for file in parquet_files:
+            try:
+                df = pd.read_parquet(file)
+
+                # Group by exchange and token
+                for exchange in df['exchange'].unique():
+                    for base in df['base'].unique():
+                        quote = df['quote'].iloc[0] if 'quote' in df.columns else 'USD'
+
+                        # Filter data
+                        pair_df = df[
+                            (df['exchange'] == exchange) &
+                            (df['base'] == base)
+                        ].copy()
+
+                        # Sort by timestamp
+                        pair_df = pair_df.sort_values('timestamp').reset_index(drop=True)
+
+                        # Create feed key
+                        connector_name = f"{exchange}_perpetual"
+                        trading_pair = f"{base}-{quote}"
+                        feed_key = f"{connector_name}_{trading_pair}"
+
+                        self.funding_feeds[feed_key] = pair_df
+
+                        logger.info(f"  Loaded {len(pair_df)} funding records for {feed_key}")
+
+            except Exception as e:
+                logger.error(f"Error loading funding data from {file}: {e}")
+
+        logger.info(f"✅ Loaded {len(self.funding_feeds)} funding rate feeds")
+
+    def get_funding_info(self, connector_name: str, trading_pair: str) -> Optional['FundingInfo']:
+        """
+        Get funding info at the current backtest timestamp.
+
+        Args:
+            connector_name: e.g., "extended_perpetual"
+            trading_pair: e.g., "KAITO-USD"
+
+        Returns:
+            FundingInfo object with historical data, or None if not available
+        """
+        from hummingbot.core.data_type.funding_info import FundingInfo
+
+        # Get funding feed
+        feed_key = f"{connector_name}_{trading_pair}"
+        funding_df = self.funding_feeds.get(feed_key)
+
+        if funding_df is None or funding_df.empty:
+            logger.warning(f"No funding data for {feed_key}")
+            return None
+
+        # Get current backtest time
+        current_time = self._time
+
+        if current_time is None:
+            logger.warning("Backtest time not set")
+            return None
+
+        # Find most recent funding rate at or before current time
+        historical_data = funding_df[funding_df['timestamp'] <= current_time]
+
+        if historical_data.empty:
+            logger.warning(f"No funding data for {feed_key} at timestamp {current_time}")
+            return None
+
+        # Get most recent record
+        latest = historical_data.iloc[-1]
+
+        # Calculate next funding timestamp (assume hourly funding)
+        funding_interval = 3600
+        next_funding = int(latest['timestamp']) + funding_interval
+
+        # Get mark/index price from current prices
+        mark_price = self.get_price_by_type(connector_name, trading_pair, PriceType.MidPrice)
+        index_price = mark_price
+
+        # Create FundingInfo object
+        funding_info = FundingInfo(
+            trading_pair=trading_pair,
+            index_price=Decimal(str(index_price)),
+            mark_price=Decimal(str(mark_price)),
+            next_funding_utc_timestamp=next_funding,
+            rate=Decimal(str(latest['funding_rate']))
+        )
+
+        return funding_info
