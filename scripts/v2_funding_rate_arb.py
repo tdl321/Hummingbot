@@ -22,42 +22,54 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     controllers_config: List[str] = []
     markets: Dict[str, Set[str]] = {}
     leverage: int = Field(
-        default=20, gt=0,
-        json_schema_extra={"prompt": lambda mi: "Enter the leverage (e.g. 20): ", "prompt_on_new": True},
+        default=5, gt=0,
+        json_schema_extra={"prompt": lambda mi: "Enter the leverage (e.g. 5): ", "prompt_on_new": True},
     )
     min_funding_rate_profitability: Decimal = Field(
-        default=0.001,
+        default=0.003,
         json_schema_extra={
-            "prompt": lambda mi: "Enter the min funding rate profitability to enter in a position (e.g. 0.001): ",
+            "prompt": lambda mi: "Enter the min funding rate profitability to enter in a position (e.g. 0.003): ",
             "prompt_on_new": True}
     )
     connectors: Set[str] = Field(
-        default="hyperliquid_perpetual,binance_perpetual",
+        default="extended_perpetual,lighter_perpetual",
         json_schema_extra={
-            "prompt": lambda mi: "Enter the connectors separated by commas (e.g. hyperliquid_perpetual,binance_perpetual): ",
+            "prompt": lambda mi: "Enter the connectors separated by commas (e.g. extended_perpetual,lighter_perpetual): ",
             "prompt_on_new": True}
     )
     tokens: Set[str] = Field(
-        default="WIF,FET",
-        json_schema_extra={"prompt": lambda mi: "Enter the tokens separated by commas (e.g. WIF,FET): ", "prompt_on_new": True},
+        default="KAITO,MON,IP,GRASS,ZEC,APT,SUI,TRUMP,LDO,OP,SEI,MEGA",
+        json_schema_extra={"prompt": lambda mi: "Enter the tokens separated by commas (e.g. KAITO,MON,IP): ", "prompt_on_new": True},
     )
     position_size_quote: Decimal = Field(
-        default=100,
+        default=500,
         json_schema_extra={
-            "prompt": lambda mi: "Enter the position size in quote asset (e.g. order amount 100 will open 100 long on hyperliquid and 100 short on binance): ",
+            "prompt": lambda mi: "Enter the position size in quote asset per side (e.g. 500 will open $500 long and $500 short): ",
             "prompt_on_new": True
         }
     )
-    profitability_to_take_profit: Decimal = Field(
-        default=0.01,
+    absolute_min_spread_exit: Decimal = Field(
+        default=0.002,
         json_schema_extra={
-            "prompt": lambda mi: "Enter the profitability to take profit (including PNL of positions and fundings received): ",
+            "prompt": lambda mi: "Enter the absolute minimum spread for exit (e.g. 0.002 for 0.2%): ",
             "prompt_on_new": True}
     )
-    funding_rate_diff_stop_loss: Decimal = Field(
-        default=-0.001,
+    compression_exit_threshold: Decimal = Field(
+        default=0.4,
         json_schema_extra={
-            "prompt": lambda mi: "Enter the funding rate difference to stop the position (e.g. -0.001): ",
+            "prompt": lambda mi: "Enter the compression exit threshold (e.g. 0.4 = exit at 60% compression): ",
+            "prompt_on_new": True}
+    )
+    max_position_duration_hours: int = Field(
+        default=24,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter the max position duration in hours (e.g. 24): ",
+            "prompt_on_new": True}
+    )
+    max_loss_per_position_pct: Decimal = Field(
+        default=0.03,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter the max loss per position % (e.g. 0.03 for 3%): ",
             "prompt_on_new": True}
     )
     trade_profitability_condition_to_enter: bool = Field(
@@ -77,10 +89,14 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
 
 class FundingRateArbitrage(StrategyV2Base):
     quote_markets_map = {
+        "extended_perpetual": "USD",
+        "lighter_perpetual": "USD",
         "hyperliquid_perpetual": "USD",
         "binance_perpetual": "USDT"
     }
     funding_payment_interval_map = {
+        "extended_perpetual": 60 * 60 * 8,
+        "lighter_perpetual": 60 * 60 * 1,
         "binance_perpetual": 60 * 60 * 8,
         "hyperliquid_perpetual": 60 * 60 * 1
     }
@@ -116,7 +132,7 @@ class FundingRateArbitrage(StrategyV2Base):
     def apply_initial_setting(self):
         for connector_name, connector in self.connectors.items():
             if self.is_perpetual(connector_name):
-                position_mode = PositionMode.ONEWAY if connector_name == "hyperliquid_perpetual" else PositionMode.HEDGE
+                position_mode = PositionMode.ONEWAY if connector_name in ["hyperliquid_perpetual", "extended_perpetual", "lighter_perpetual"] else PositionMode.HEDGE
                 connector.set_position_mode(position_mode)
                 for trading_pair in self.market_data_provider.get_trading_pairs(connector_name):
                     connector.set_leverage(trading_pair, self.config.leverage)
@@ -233,6 +249,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
                         "side": trade_side,
                         "funding_payments": [],
+                        "entry_spread": expected_profitability,
+                        "entry_timestamp": self.current_timestamp,
                     }
                     return [CreateExecutorAction(executor_config=position_executor_config_1),
                             CreateExecutorAction(executor_config=position_executor_config_2)]
@@ -240,9 +258,13 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
         """
-        Once the funding rate arbitrage is created we are going to control the funding payments pnl and the current
-        pnl of each of the executors at the cost of closing the open position at market.
-        If that PNL is greater than the profitability_to_take_profit
+        Exit positions based on spread conditions only (no take profit).
+        Exit conditions:
+        1. Spread flips negative
+        2. Spread below absolute minimum (0.2%)
+        3. Spread compresses 60%+
+        4. Max duration (24h)
+        5. Stop loss (-3%)
         """
         stop_executor_actions = []
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
@@ -250,23 +272,58 @@ class FundingRateArbitrage(StrategyV2Base):
                 executors=self.get_all_executors(),
                 filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
             )
-            funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"])
-            executors_pnl = sum(executor.net_pnl_quote for executor in executors)
-            take_profit_condition = executors_pnl + funding_payments_pnl > self.config.profitability_to_take_profit * self.config.position_size_quote
+
+            # Get current spread
             funding_info_report = self.get_funding_info_by_token(token)
             if funding_arbitrage_info["side"] == TradeType.BUY:
-                funding_rate_diff = self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_2"]) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_1"])
+                current_spread = abs(self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_2"]) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_1"]))
             else:
-                funding_rate_diff = self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_1"]) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_2"])
-            current_funding_condition = funding_rate_diff * self.funding_profitability_interval < self.config.funding_rate_diff_stop_loss
-            if take_profit_condition:
-                self.logger().info("Take profit profitability reached, stopping executors")
+                current_spread = abs(self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_1"]) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_2"]))
+
+            current_spread_hourly = current_spread * 3600  # Convert to hourly
+            entry_spread = funding_arbitrage_info.get("entry_spread", current_spread_hourly)
+
+            # Calculate duration
+            duration_hours = (self.current_timestamp - funding_arbitrage_info.get("entry_timestamp", self.current_timestamp)) / 3600
+
+            # Calculate PNL for stop loss check
+            funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"])
+            executors_pnl = sum(executor.net_pnl_quote for executor in executors)
+            total_pnl = executors_pnl + funding_payments_pnl
+            position_value = self.config.position_size_quote * 2
+            pnl_pct = total_pnl / position_value if position_value > 0 else 0
+
+            # Exit conditions
+            exit_reason = None
+
+            # 1. Spread flip (negative)
+            if current_spread_hourly < 0:
+                exit_reason = f"Spread flipped negative: {current_spread_hourly:.4f}"
+
+            # 2. Absolute minimum spread
+            elif current_spread_hourly < self.config.absolute_min_spread_exit:
+                exit_reason = f"Spread below minimum: {current_spread_hourly:.4f} < {self.config.absolute_min_spread_exit:.4f}"
+
+            # 3. Spread compression
+            elif entry_spread > 0:
+                compression_ratio = current_spread_hourly / entry_spread
+                if compression_ratio < self.config.compression_exit_threshold:
+                    compression_pct = (1 - compression_ratio) * 100
+                    exit_reason = f"Spread compressed {compression_pct:.1f}% (entry: {entry_spread:.4f}, current: {current_spread_hourly:.4f})"
+
+            # 4. Max duration
+            if exit_reason is None and duration_hours >= self.config.max_position_duration_hours:
+                exit_reason = f"Max duration reached: {duration_hours:.1f}h"
+
+            # 5. Stop loss
+            if exit_reason is None and pnl_pct <= -self.config.max_loss_per_position_pct:
+                exit_reason = f"Stop loss hit: {pnl_pct:.2%}"
+
+            if exit_reason:
+                self.logger().info(f"Exiting {token}: {exit_reason}")
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
-            elif current_funding_condition:
-                self.logger().info("Funding rate difference reached for stop loss, stopping executors")
-                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
-                stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+
         return stop_executor_actions
 
     def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
@@ -325,7 +382,6 @@ class FundingRateArbitrage(StrategyV2Base):
                 best_paths_info["Best Rate Diff (%)"] = funding_rate_diff * 100
                 best_paths_info["Trade Profitability (%)"] = profitability_after_fees * 100
                 best_paths_info["Days Trade Prof"] = - profitability_after_fees / funding_rate_diff
-                best_paths_info["Days to TP"] = (self.config.profitability_to_take_profit - profitability_after_fees) / funding_rate_diff
 
                 time_to_next_funding_info_c1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                 time_to_next_funding_info_c2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
@@ -334,8 +390,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 all_funding_info.append(token_info)
                 all_best_paths.append(best_paths_info)
-            funding_rate_status.append(f"\n\n\nMin Funding Rate Profitability: {self.config.min_funding_rate_profitability:.2%}")
-            funding_rate_status.append(f"Profitability to Take Profit: {self.config.profitability_to_take_profit:.2%}\n")
+            funding_rate_status.append(f"\n\n\nMin Funding Rate Profitability: {self.config.min_funding_rate_profitability:.2%}\n")
             funding_rate_status.append("Funding Rate Info (Funding Profitability in Days): ")
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format="psql",))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format="psql",))

@@ -32,6 +32,9 @@ class LighterPerpetualAuth(AuthBase):
             api_secret: Ethereum private key (hex string) for signing transactions
             api_key_index: API key index (default 0, Lighter supports up to 256 per sub-account)
             account_index: Sub-account index (default 0)
+
+        Raises:
+            RuntimeError: If Configuration initialization fails
         """
         self._api_key: str = api_key
         self._api_secret: str = api_secret
@@ -39,8 +42,14 @@ class LighterPerpetualAuth(AuthBase):
         self._account_index: int = account_index
 
         # Get Lighter mainnet URL from Configuration
-        config = Configuration()
-        self._url: str = config.host  # https://mainnet.zklighter.elliot.ai
+        try:
+            config = Configuration()
+            self._url: str = config.host  # https://mainnet.zklighter.elliot.ai
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to initialize Lighter Configuration. "
+                f"Ensure lighter SDK is properly installed. Error: {str(e)}"
+            ) from e
 
         # Lazy-initialize SignerClient when needed
         self._signer_client: Optional[SignerClient] = None
@@ -49,30 +58,24 @@ class LighterPerpetualAuth(AuthBase):
         """
         Add authentication headers to REST requests.
 
-        Lighter typically uses API key in query params or headers for authenticated endpoints.
+        Lighter uses API key header for authenticated endpoints.
+
+        Note: Order signing and transaction submission are handled by the
+        lighter SDK (SignerClient) via get_signer_client(), not through
+        this method. This method only adds the API key header for read-only
+        account data endpoints.
 
         Args:
             request: The REST request to authenticate
 
         Returns:
-            Authenticated REST request with required headers/params
+            Authenticated REST request with X-API-Key header
         """
         if request.headers is None:
             request.headers = {}
 
-        # Add API key header (if Lighter uses header-based auth)
-        # Note: Lighter may use different auth methods - verify with API docs
+        # Add API key header for read-only endpoints
         request.headers["X-API-Key"] = self._api_key
-
-        # For POST requests that modify account state (orders, transactions, etc.),
-        # Lighter requires transaction signing. This will be implemented in a future iteration.
-        if request.method == RESTMethod.POST:
-            # TODO: Implement transaction signing
-            # This requires:
-            # 1. ZK proof generation or similar cryptography
-            # 2. Message hashing according to Lighter's specification
-            # 3. Signature generation using api_secret
-            pass
 
         return request
 
@@ -80,50 +83,73 @@ class LighterPerpetualAuth(AuthBase):
         """
         Add authentication to WebSocket requests.
 
-        Lighter WebSocket authentication may require sending API key
-        in the initial subscription message.
+        Note: WebSocket authentication for private channels (user orders, positions)
+        is not currently implemented. Public market data channels do not require
+        authentication.
+
+        When needed, Lighter WebSocket auth typically requires sending an auth
+        message after connection with the API key.
 
         Args:
             request: The WebSocket request to authenticate
 
         Returns:
-            Authenticated WebSocket request
+            WebSocket request (currently unmodified)
         """
-        # WebSocket authentication will be implemented when WebSocket support is added
-        # Typically requires sending auth message after connection:
-        # {"type": "auth", "apiKey": "..."}
         return request
 
     def get_signer_client(self) -> SignerClient:
         """
         Get or create SignerClient for transaction signing.
 
-        The SignerClient handles all transaction signing and submission internally.
+        The SignerClient handles all transaction signing and submission internally
+        using the lighter SDK.
 
         Returns:
             SignerClient instance
+
+        Raises:
+            ValueError: If private key format is invalid
+            RuntimeError: If client initialization fails
         """
         if self._signer_client is None:
-            # Create SignerClient with mainnet URL and credentials
-            self._signer_client = SignerClient(
-                url=self._url,
-                private_key=self._api_secret,  # Ethereum private key
-                api_key_index=self._api_key_index,
-                account_index=self._account_index
-            )
+            try:
+                # Create SignerClient with mainnet URL and credentials
+                self._signer_client = SignerClient(
+                    url=self._url,
+                    private_key=self._api_secret,  # Ethereum private key
+                    api_key_index=self._api_key_index,
+                    account_index=self._account_index
+                )
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid Ethereum private key format. "
+                    f"Expected hex string (with or without '0x' prefix). Error: {str(e)}"
+                ) from e
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to initialize Lighter SignerClient. "
+                    f"Ensure network connectivity to {self._url} and valid credentials. "
+                    f"Error: {str(e)}"
+                ) from e
 
         return self._signer_client
 
     def close(self):
         """
         Close the SignerClient connection if open.
+
+        This method safely closes the SignerClient, catching and suppressing
+        any exceptions during cleanup.
         """
         if self._signer_client is not None:
             try:
                 self._signer_client.close()
-            except Exception:
+            except Exception as e:
+                # Suppress errors during cleanup, but could log them if logger available
                 pass
-            self._signer_client = None
+            finally:
+                self._signer_client = None
 
     @staticmethod
     def _get_timestamp() -> float:

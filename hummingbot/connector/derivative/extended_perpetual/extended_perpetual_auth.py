@@ -37,13 +37,28 @@ class ExtendedPerpetualAuth(AuthBase):
         # Derive public key from private key
         try:
             # Convert hex private key to integer
-            private_key_int = int(api_secret, 16) if isinstance(api_secret, str) and api_secret.startswith('0x') else int(api_secret, 16)
-            # Derive public key
+            # Handle both '0x' prefixed and unprefixed hex strings
+            if isinstance(api_secret, str):
+                clean_secret = api_secret[2:] if api_secret.startswith('0x') else api_secret
+                private_key_int = int(clean_secret, 16)
+            else:
+                raise ValueError("API secret must be a hex string")
+
+            # Derive public key using Stark curve
             public_key_int = fast_stark_crypto.get_public_key(private_key_int)
             self._public_key = hex(public_key_int)
+        except ValueError as e:
+            self._public_key = None
+            raise ValueError(
+                f"Invalid Stark private key format. Expected hex string (with or without '0x' prefix). "
+                f"Error: {str(e)}"
+            ) from e
         except Exception as e:
             self._public_key = None
-            # Will raise error when trying to sign if public key derivation failed
+            raise RuntimeError(
+                f"Failed to derive Stark public key from private key. "
+                f"Ensure your api_secret is a valid Stark private key. Error: {str(e)}"
+            ) from e
 
         # Lazy-initialize StarkPerpetualAccount and TradingClient when needed
         self._stark_account: Optional[StarkPerpetualAccount] = None
@@ -53,30 +68,24 @@ class ExtendedPerpetualAuth(AuthBase):
         """
         Add authentication headers to REST requests.
 
-        Extended requires X-Api-Key header for all authenticated endpoints.
+        Extended requires X-Api-Key header for authenticated endpoints.
+
+        Note: Order signing and state-modifying operations are handled by the
+        x10 SDK (PerpetualTradingClient) via get_trading_client(), not through
+        this method. This method only adds the API key header for read-only
+        account data endpoints.
 
         Args:
             request: The REST request to authenticate
 
         Returns:
-            Authenticated REST request with required headers
+            Authenticated REST request with X-Api-Key header
         """
         if request.headers is None:
             request.headers = {}
 
-        # Add API key header (required for all private endpoints)
+        # Add API key header for read-only endpoints
         request.headers["X-Api-Key"] = self._api_key
-
-        # For POST requests that modify account state (orders, leverage, etc.),
-        # Extended requires Stark signatures. This will be implemented in a future iteration.
-        # For now, this provides read-only access to account data.
-        if request.method == RESTMethod.POST:
-            # TODO: Implement Stark signature for order placement
-            # This requires:
-            # 1. Stark curve cryptography (starknet.py or similar library)
-            # 2. Message hashing according to Extended's specification
-            # 3. Signature generation using api_secret
-            pass
 
         return request
 
@@ -84,18 +93,19 @@ class ExtendedPerpetualAuth(AuthBase):
         """
         Add authentication to WebSocket requests.
 
-        Extended WebSocket authentication typically uses a connection token
-        or API key in the initial subscription message.
+        Note: WebSocket authentication for private channels (user orders, positions)
+        is not currently implemented. Public market data channels do not require
+        authentication.
+
+        When needed, Extended WebSocket auth typically requires sending an auth
+        message after connection with the API key.
 
         Args:
             request: The WebSocket request to authenticate
 
         Returns:
-            Authenticated WebSocket request
+            WebSocket request (currently unmodified)
         """
-        # WebSocket authentication will be implemented when WebSocket support is added
-        # Typically requires sending auth message after connection:
-        # {"type": "subscribe", "channel": "user", "apiKey": "..."}
         return request
 
     def _initialize_stark_account(self):
@@ -103,40 +113,65 @@ class ExtendedPerpetualAuth(AuthBase):
         Initialize StarkPerpetualAccount if not already created.
 
         Requires vault_id to be set (either during init or fetched from API).
+
+        Raises:
+            ValueError: If vault_id is not set or public key derivation failed
+            RuntimeError: If StarkPerpetualAccount initialization fails
         """
         if self._stark_account is None:
             if self._vault_id is None:
-                raise ValueError("Cannot initialize Stark account: vault_id not set. "
-                                 "Fetch vault_id from Extended API first.")
+                raise ValueError(
+                    "Cannot initialize Stark account: vault_id not set. "
+                    "Fetch vault_id from Extended API using connector._ensure_vault_id() first."
+                )
             if self._public_key is None:
-                raise ValueError("Cannot initialize Stark account: public key derivation failed. "
-                                 "Check that api_secret is a valid Stark private key.")
+                raise ValueError(
+                    "Cannot initialize Stark account: public key derivation failed. "
+                    "Check that api_secret is a valid Stark private key (hex string)."
+                )
 
-            self._stark_account = StarkPerpetualAccount(
-                vault=self._vault_id,
-                private_key=self._api_secret,
-                public_key=self._public_key,
-                api_key=self._api_key
-            )
+            try:
+                self._stark_account = StarkPerpetualAccount(
+                    vault=self._vault_id,
+                    private_key=self._api_secret,
+                    public_key=self._public_key,
+                    api_key=self._api_key
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to initialize StarkPerpetualAccount with vault={self._vault_id}. "
+                    f"Error: {str(e)}"
+                ) from e
 
     def get_trading_client(self) -> PerpetualTradingClient:
         """
         Get or create PerpetualTradingClient for order operations.
 
-        The trading client handles all order signing and submission internally.
+        The trading client handles all order signing and submission internally
+        using the x10 SDK.
 
         Returns:
             PerpetualTradingClient instance
+
+        Raises:
+            ValueError: If vault_id or public key is not available
+            RuntimeError: If client initialization fails
         """
         if self._trading_client is None:
             # Ensure Stark account is initialized
             self._initialize_stark_account()
 
-            # Create trading client with mainnet config and Stark account
-            self._trading_client = PerpetualTradingClient(
-                endpoint_config=MAINNET_CONFIG,
-                stark_account=self._stark_account
-            )
+            try:
+                # Create trading client with mainnet config and Stark account
+                self._trading_client = PerpetualTradingClient(
+                    endpoint_config=MAINNET_CONFIG,
+                    stark_account=self._stark_account
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to initialize PerpetualTradingClient. "
+                    f"Ensure network connectivity and valid credentials. Error: {str(e)}"
+                ) from e
 
         return self._trading_client
 
