@@ -78,6 +78,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Do you want to check the trade profitability condition to enter? (True/False): ",
             "prompt_on_new": True}
     )
+    min_balance_threshold: Decimal = Field(
+        default=Decimal("200"),
+        json_schema_extra={
+            "prompt": lambda mi: "Enter minimum balance threshold in USD (warning level, e.g. 200): ",
+            "prompt_on_new": False}
+    )
 
     @field_validator("connectors", "tokens", mode="before")
     @classmethod
@@ -120,6 +126,41 @@ class FundingRateArbitrage(StrategyV2Base):
         self.active_funding_arbitrages = {}
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
 
+    def get_required_margin(self, connector_name: str, position_size_quote: Decimal) -> Decimal:
+        """
+        Calculate the margin (collateral) required for a position.
+
+        Args:
+            connector_name: Exchange connector name
+            position_size_quote: Position size in quote currency (USD)
+
+        Returns:
+            Required margin in quote currency with 10% safety buffer
+        """
+        # Margin = Position Size / Leverage
+        required_margin = position_size_quote / Decimal(str(self.config.leverage))
+
+        # Add 10% safety buffer for fees and price slippage
+        safety_buffer = Decimal("1.1")
+
+        return required_margin * safety_buffer
+
+    def check_sufficient_balance(self, connector_name: str, required_amount: Decimal) -> tuple:
+        """
+        Check if connector has sufficient balance for a position.
+
+        Returns:
+            (is_sufficient, available_balance, shortfall)
+        """
+        connector = self.connectors[connector_name]
+        quote_asset = self.quote_markets_map.get(connector_name, "USDT")
+
+        available_balance = connector.get_available_balance(quote_asset)
+        is_sufficient = available_balance >= required_amount
+        shortfall = max(Decimal("0"), required_amount - available_balance)
+
+        return is_sufficient, available_balance, shortfall
+
     def start(self, clock: Clock, timestamp: float) -> None:
         """
         Start the strategy.
@@ -136,6 +177,27 @@ class FundingRateArbitrage(StrategyV2Base):
                 connector.set_position_mode(position_mode)
                 for trading_pair in self.market_data_provider.get_trading_pairs(connector_name):
                     connector.set_leverage(trading_pair, self.config.leverage)
+
+        # Check initial balances on startup
+        self.logger().info("Checking initial balances...")
+        for connector_name, connector in self.connectors.items():
+            if self.is_perpetual(connector_name):
+                quote_asset = self.quote_markets_map.get(connector_name, "USDT")
+                available = connector.get_available_balance(quote_asset)
+                required = self.get_required_margin(connector_name, self.config.position_size_quote)
+
+                if available < required:
+                    self.logger().warning(
+                        f"⚠️ {connector_name} has insufficient balance! "
+                        f"Available: ${available:.2f}, Required: ${required:.2f} "
+                        f"(shortfall: ${required - available:.2f})"
+                    )
+                else:
+                    max_positions = int(available / required)
+                    self.logger().info(
+                        f"✅ {connector_name}: ${available:.2f} available "
+                        f"(can open up to {max_positions} positions)"
+                    )
 
     def get_funding_info_by_token(self, token):
         """
@@ -228,6 +290,26 @@ class FundingRateArbitrage(StrategyV2Base):
                 best_combination = self.get_most_profitable_combination(funding_info_report)
                 connector_1, connector_2, trade_side, expected_profitability = best_combination
                 if expected_profitability >= self.config.min_funding_rate_profitability:
+                    # Check balance sufficiency before proceeding
+                    required_margin_c1 = self.get_required_margin(connector_1, self.config.position_size_quote)
+                    required_margin_c2 = self.get_required_margin(connector_2, self.config.position_size_quote)
+
+                    sufficient_c1, balance_c1, shortfall_c1 = self.check_sufficient_balance(connector_1, required_margin_c1)
+                    sufficient_c2, balance_c2, shortfall_c2 = self.check_sufficient_balance(connector_2, required_margin_c2)
+
+                    # Log balance status
+                    self.logger().info(f"{connector_1} - Required: ${required_margin_c1:.2f}, Available: ${balance_c1:.2f}")
+                    self.logger().info(f"{connector_2} - Required: ${required_margin_c2:.2f}, Available: ${balance_c2:.2f}")
+
+                    # Prevent trade if insufficient balance
+                    if not sufficient_c1 or not sufficient_c2:
+                        self.logger().warning(
+                            f"Insufficient balance for {token} arbitrage. "
+                            f"{connector_1} shortfall: ${shortfall_c1:.2f}, "
+                            f"{connector_2} shortfall: ${shortfall_c2:.2f}. Skipping..."
+                        )
+                        continue  # Skip this token and check next
+
                     current_profitability = self.get_current_profitability_after_fees(
                         token, connector_1, connector_2, trade_side
                     )
@@ -326,6 +408,30 @@ class FundingRateArbitrage(StrategyV2Base):
 
         return stop_executor_actions
 
+    def check_low_balance_warnings(self):
+        """
+        Check for low balances and log warnings.
+        Called periodically to monitor balance health.
+        """
+        for connector_name in self.config.connectors:
+            quote_asset = self.quote_markets_map.get(connector_name, "USDT")
+            connector = self.connectors[connector_name]
+
+            available = connector.get_available_balance(quote_asset)
+            required = self.get_required_margin(connector_name, self.config.position_size_quote)
+
+            # Warn if balance is below 2x required (can only open 1 more position)
+            if available < required * 2 and available >= required:
+                self.logger().warning(
+                    f"⚠️ LOW BALANCE: {connector_name} can only open 1 more position "
+                    f"(${available:.2f} available)"
+                )
+            elif available < required:
+                self.logger().error(
+                    f"❌ INSUFFICIENT BALANCE: {connector_name} cannot open new positions "
+                    f"(${available:.2f} available, ${required:.2f} required)"
+                )
+
     def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
         """
         Based on the funding payment event received, check if one of the active arbitrages matches to add the event
@@ -366,6 +472,34 @@ class FundingRateArbitrage(StrategyV2Base):
     def format_status(self) -> str:
         original_status = super().format_status()
         funding_rate_status = []
+
+        # Add balance status section
+        if self.ready_to_trade:
+            funding_rate_status.append("\n" + "=" * 80)
+            funding_rate_status.append("Balance Status for Arbitrage")
+            funding_rate_status.append("=" * 80)
+
+            for connector_name in self.config.connectors:
+                quote_asset = self.quote_markets_map.get(connector_name, "USDT")
+                connector = self.connectors[connector_name]
+
+                available = connector.get_available_balance(quote_asset)
+                total = connector.get_balance(quote_asset)
+                required = self.get_required_margin(connector_name, self.config.position_size_quote)
+
+                # Calculate how many positions can be opened
+                max_positions = int(available / required) if required > 0 else 0
+
+                status_emoji = "✅" if available >= required else "⚠️"
+
+                funding_rate_status.append(
+                    f"{status_emoji} {connector_name}:\n"
+                    f"   Total: ${total:.2f} | Available: ${available:.2f}\n"
+                    f"   Required per position: ${required:.2f}\n"
+                    f"   Max positions: {max_positions}"
+                )
+            funding_rate_status.append("")
+
         if self.ready_to_trade:
             all_funding_info = []
             all_best_paths = []

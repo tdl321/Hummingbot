@@ -667,12 +667,171 @@ class LighterPerpetualDerivative(PerpetualDerivativePyBase):
         pass
 
     async def _update_balances(self):
-        """Update account balances. Placeholder for future implementation."""
-        pass
+        """
+        Update account balances using Lighter API.
+
+        Fetches account data using AccountApi.account() method.
+        Response includes collateral and position details.
+        """
+        try:
+            # Import Lighter SDK components
+            from lighter import AccountApi, ApiClient, Configuration
+
+            # Get wallet address from auth (stored as api_key)
+            if not self.lighter_perpetual_api_key:
+                self.logger().warning("Lighter wallet address not configured, skipping balance update")
+                return
+
+            wallet_address = self.lighter_perpetual_api_key
+
+            # Create API client
+            config = Configuration(host=web_utils.get_rest_url_for_endpoint("", self._domain))
+            api_client = ApiClient(configuration=config)
+            account_api = AccountApi(api_client)
+
+            # Fetch account info by wallet address
+            try:
+                accounts_response = await account_api.account(by="address", value=wallet_address)
+
+                if accounts_response and hasattr(accounts_response, 'accounts'):
+                    # Get first account (usually only one per address)
+                    if len(accounts_response.accounts) > 0:
+                        account = accounts_response.accounts[0]
+
+                        # Extract balance information
+                        # collateral: The amount of collateral in the account
+                        collateral = Decimal(str(getattr(account, 'collateral', '0')))
+
+                        # Calculate total from collateral + unrealized PnL from positions
+                        total_unrealized_pnl = Decimal("0")
+                        if hasattr(account, 'position_details') and account.position_details:
+                            for position in account.position_details:
+                                unrealized = Decimal(str(getattr(position, 'unrealized_pnl', '0')))
+                                total_unrealized_pnl += unrealized
+
+                        quote = CONSTANTS.CURRENCY  # USD
+                        total_balance = collateral + total_unrealized_pnl
+                        available_balance = collateral  # Simplified: collateral is available for trading
+
+                        self._account_balances[quote] = total_balance
+                        self._account_available_balances[quote] = available_balance
+
+                        self.logger().debug(
+                            f"Lighter balance updated: Total={total_balance}, Available={available_balance}"
+                        )
+                    else:
+                        # No accounts found for this address (new account)
+                        quote = CONSTANTS.CURRENCY
+                        self._account_balances[quote] = Decimal("0")
+                        self._account_available_balances[quote] = Decimal("0")
+                        self.logger().info(f"Lighter account not found for address {wallet_address}")
+                else:
+                    self.logger().warning(f"Unexpected Lighter account response format")
+
+            finally:
+                # Close API client
+                await api_client.close()
+
+        except Exception as e:
+            self.logger().error(f"Error updating Lighter balances: {e}", exc_info=True)
+            # Don't raise - allow strategy to continue even if balance update fails
+            # Set to zero as fallback
+            quote = CONSTANTS.CURRENCY
+            self._account_balances[quote] = Decimal("0")
+            self._account_available_balances[quote] = Decimal("0")
 
     async def _update_positions(self):
-        """Update positions. Placeholder for future implementation."""
-        pass
+        """
+        Update positions using Lighter API.
+
+        Fetches position data from account details.
+        Position details include: OOC, sign, position, avg entry price, etc.
+        """
+        try:
+            # Import Lighter SDK components
+            from lighter import AccountApi, ApiClient, Configuration
+
+            # Get wallet address from auth
+            if not self.lighter_perpetual_api_key:
+                self.logger().warning("Lighter wallet address not configured, skipping position update")
+                return
+
+            wallet_address = self.lighter_perpetual_api_key
+
+            # Create API client
+            config = Configuration(host=web_utils.get_rest_url_for_endpoint("", self._domain))
+            api_client = ApiClient(configuration=config)
+            account_api = AccountApi(api_client)
+
+            # Fetch account info with positions
+            try:
+                accounts_response = await account_api.account(by="address", value=wallet_address)
+
+                if accounts_response and hasattr(accounts_response, 'accounts'):
+                    if len(accounts_response.accounts) > 0:
+                        account = accounts_response.accounts[0]
+
+                        # Process position details
+                        if hasattr(account, 'position_details') and account.position_details:
+                            for position_info in account.position_details:
+                                try:
+                                    # Position details from API:
+                                    # - sign: 1 for Long, -1 for Short
+                                    # - position: The amount of position
+                                    # - avg_entry_price: Average entry price
+                                    # - unrealized_pnl: Unrealized profit/loss
+                                    # - realized_pnl: Realized profit/loss
+
+                                    sign = int(getattr(position_info, 'sign', 0))
+                                    position_amount = Decimal(str(getattr(position_info, 'position', '0')))
+
+                                    if position_amount == 0:
+                                        continue  # Skip zero positions
+
+                                    # Determine position side
+                                    position_side = PositionSide.LONG if sign > 0 else PositionSide.SHORT
+
+                                    # Get market symbol and convert to trading pair
+                                    market_symbol = getattr(position_info, 'symbol', '')
+                                    if not market_symbol:
+                                        continue
+
+                                    # Convert to Hummingbot trading pair format
+                                    trading_pair = await self.trading_pair_associated_to_exchange_symbol(
+                                        f"{market_symbol}-{CONSTANTS.CURRENCY}"
+                                    )
+
+                                    # Extract position details
+                                    entry_price = Decimal(str(getattr(position_info, 'avg_entry_price', '0')))
+                                    unrealized_pnl = Decimal(str(getattr(position_info, 'unrealized_pnl', '0')))
+
+                                    # Get leverage from position value / margin (if available)
+                                    # Otherwise use default leverage
+                                    leverage_value = Decimal("1")  # Default if not available
+
+                                    # Create or update position
+                                    pos_key = self._perpetual_trading.position_key(trading_pair, position_side)
+                                    position = Position(
+                                        trading_pair=trading_pair,
+                                        position_side=position_side,
+                                        unrealized_pnl=unrealized_pnl,
+                                        entry_price=entry_price,
+                                        amount=abs(position_amount),
+                                        leverage=leverage_value
+                                    )
+                                    self._perpetual_trading.set_position(pos_key, position)
+
+                                except Exception as e:
+                                    self.logger().error(f"Error parsing Lighter position: {e}", exc_info=True)
+                                    continue
+
+            finally:
+                # Close API client
+                await api_client.close()
+
+        except Exception as e:
+            self.logger().error(f"Error updating Lighter positions: {e}", exc_info=True)
+            # Don't raise - allow strategy to continue
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         """Get all trade updates for an order. Placeholder for future implementation."""

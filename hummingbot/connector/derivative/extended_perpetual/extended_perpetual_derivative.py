@@ -660,12 +660,120 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
         pass
 
     async def _update_balances(self):
-        """Update account balances. Placeholder for future implementation."""
-        pass
+        """
+        Update account balances from Extended API.
+
+        Fetches balance data from /api/v1/user/balance endpoint.
+        Returns 404 if balance is zero (new account).
+        """
+        try:
+            response = await self._api_get(
+                path_url=CONSTANTS.BALANCE_URL,
+                is_auth_required=True
+            )
+
+            if isinstance(response, dict) and response.get('status') == 'OK':
+                data = response.get('data', {})
+
+                # Extended balance response fields:
+                # - balance: Account balance = Deposits - Withdrawals + Realised PnL
+                # - equity: Balance + unrealised gains/losses
+                # - availableForTrade: Equity minus initial margin requirements
+                # - availableForWithdrawal: Maximum withdrawable amount
+                quote = CONSTANTS.CURRENCY  # USD
+
+                # Use equity as total balance (includes unrealized PnL)
+                total_balance = Decimal(str(data.get('equity', '0')))
+                # Use availableForTrade as available balance (can open new positions with this)
+                available_balance = Decimal(str(data.get('availableForTrade', '0')))
+
+                self._account_balances[quote] = total_balance
+                self._account_available_balances[quote] = available_balance
+
+                self.logger().debug(
+                    f"Extended balance updated: Total={total_balance}, Available={available_balance}"
+                )
+
+            else:
+                # Log unexpected response format
+                self.logger().warning(f"Unexpected Extended balance response: {response}")
+
+        except Exception as e:
+            # Handle 404 error (zero balance) gracefully
+            error_msg = str(e).lower()
+            if '404' in error_msg or 'not found' in error_msg:
+                # Account exists but has zero balance
+                quote = CONSTANTS.CURRENCY
+                self._account_balances[quote] = Decimal("0")
+                self._account_available_balances[quote] = Decimal("0")
+                self.logger().info("Extended account has zero balance (404 response)")
+            else:
+                self.logger().error(f"Error updating Extended balances: {e}", exc_info=True)
+                raise
 
     async def _update_positions(self):
-        """Update positions. Placeholder for future implementation."""
-        pass
+        """
+        Update positions from Extended API.
+
+        Fetches active positions from /api/v1/user/positions endpoint.
+        """
+        try:
+            response = await self._api_get(
+                path_url=CONSTANTS.POSITIONS_URL,
+                is_auth_required=True
+            )
+
+            if isinstance(response, dict) and response.get('status') == 'OK':
+                positions_data = response.get('data', [])
+
+                for position_info in positions_data:
+                    try:
+                        # Parse position data
+                        market = position_info.get('market', '')  # e.g., "KAITO-USD"
+                        trading_pair = await self.trading_pair_associated_to_exchange_symbol(market)
+
+                        # Determine position side from size (positive = long, negative = short)
+                        size = Decimal(str(position_info.get('size', '0')))
+                        if size == 0:
+                            continue  # Skip zero positions
+
+                        position_side = PositionSide.LONG if size > 0 else PositionSide.SHORT
+                        amount = abs(size)
+
+                        # Get position details
+                        entry_price = Decimal(str(position_info.get('entryPrice', '0')))
+                        unrealized_pnl = Decimal(str(position_info.get('unrealisedPnl', '0')))
+                        leverage_value = Decimal(str(position_info.get('leverage', '1')))
+
+                        # Create or update position
+                        pos_key = self._perpetual_trading.position_key(trading_pair, position_side)
+                        position = Position(
+                            trading_pair=trading_pair,
+                            position_side=position_side,
+                            unrealized_pnl=unrealized_pnl,
+                            entry_price=entry_price,
+                            amount=amount,
+                            leverage=leverage_value
+                        )
+                        self._perpetual_trading.set_position(pos_key, position)
+
+                    except Exception as e:
+                        self.logger().error(f"Error parsing Extended position: {e}", exc_info=True)
+                        continue
+
+            else:
+                # Log unexpected response
+                self.logger().warning(f"Unexpected Extended positions response: {response}")
+
+        except Exception as e:
+            # Handle 404 error (no positions) gracefully
+            error_msg = str(e).lower()
+            if '404' in error_msg or 'not found' in error_msg:
+                # No open positions
+                self.logger().debug("No open positions on Extended (404 response)")
+            else:
+                self.logger().error(f"Error updating Extended positions: {e}", exc_info=True)
+                raise
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         """Get all trade updates for an order. Placeholder for future implementation."""
