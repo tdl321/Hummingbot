@@ -685,7 +685,7 @@ class LighterPerpetualDerivative(PerpetualDerivativePyBase):
             wallet_address = self.lighter_perpetual_api_key
 
             # Create API client
-            config = Configuration(host=web_utils.get_rest_url_for_endpoint("", self._domain))
+            config = Configuration(host=web_utils.rest_url("", self._domain))
             api_client = ApiClient(configuration=config)
             account_api = AccountApi(api_client)
 
@@ -759,7 +759,7 @@ class LighterPerpetualDerivative(PerpetualDerivativePyBase):
             wallet_address = self.lighter_perpetual_api_key
 
             # Create API client
-            config = Configuration(host=web_utils.get_rest_url_for_endpoint("", self._domain))
+            config = Configuration(host=web_utils.rest_url("", self._domain))
             api_client = ApiClient(configuration=config)
             account_api = AccountApi(api_client)
 
