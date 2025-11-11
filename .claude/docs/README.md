@@ -56,6 +56,51 @@ This directory contains chronologically organized documentation for the Extended
   - Credential verification
   - Ready-for-testing status
 
+- **2025-11-07_SECURITY_AUDIT_REPORT.md**
+  - Security audit of connector implementations
+  - Balance checking and API validation
+  - Critical issues identified and resolved
+
+- **2025-11-07_01_HEALTH_CHECK_REPORT.md**
+  - System health check results
+  - Connector validation status
+
+- **2025-11-07_02_BALANCE_CHECKING_IMPLEMENTATION.md**
+  - Balance checking implementation details
+  - API integration verification
+
+- **2025-11-07_03_BALANCE_CHECK_RESULTS.md**
+  - Balance check test results
+  - Validation outcomes
+
+- **2025-11-07_04_CRITICAL_ISSUE_FOUND.md**
+  - Critical issues discovered during testing
+  - Resolution steps
+
+- **TESTING_STATUS_2025-11-07.md**
+  - Complete testing status summary
+  - Automated testing results (syntax validation, code review)
+  - Manual testing requirements and checklist
+  - Success criteria and expected outcomes
+  - Quick start testing guide
+
+- **MANUAL_TESTING_GUIDE_2025-11-07.md**
+  - Step-by-step manual testing instructions
+  - Phase 1: Connector configuration & balance verification
+  - Phase 2: Strategy balance checking
+  - Phase 3: Live trading validation
+  - Troubleshooting guide and safety reminders
+  - Validation checklist
+
+### 2025-11-10: Infrastructure Setup
+- **HUMMINGBOT_MCP_SETUP_2025-11-10.md**
+  - Complete Hummingbot Model Context Protocol (MCP) server setup guide
+  - Claude CLI integration with Docker
+  - Docker networking configuration for Mac
+  - Environment configuration and troubleshooting
+  - Available MCP tools and capabilities
+  - Security considerations and best practices
+
 ---
 
 ## Quick Reference
@@ -88,4 +133,15 @@ Standard repository files (README, CONTRIBUTING, CODE_OF_CONDUCT, etc.) remain i
 
 ---
 
-**Last Updated**: 2025-11-07
+## Infrastructure & Tools
+
+### MCP Server Setup
+- **Hummingbot MCP Server**: Enables Claude CLI to interact with Hummingbot for automated trading
+- **Transport**: stdio via Docker
+- **Docker Image**: `hummingbot/hummingbot-mcp:latest`
+- **Configuration**: `/Users/tdl321/mcp/.env`
+- **Status**: ✓ Connected to Claude CLI
+
+---
+
+**Last Updated**: 2025-11-10
