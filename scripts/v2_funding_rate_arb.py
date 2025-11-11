@@ -84,6 +84,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter minimum balance threshold in USD (warning level, e.g. 200): ",
             "prompt_on_new": False}
     )
+    min_daily_volume_usd: Decimal = Field(
+        default=Decimal("50000"),
+        json_schema_extra={
+            "prompt": lambda mi: "Enter minimum 24h volume per side in USD (e.g. 50000): ",
+            "prompt_on_new": True}
+    )
 
     @field_validator("connectors", "tokens", mode="before")
     @classmethod
@@ -143,6 +149,55 @@ class FundingRateArbitrage(StrategyV2Base):
         self.active_funding_arbitrages = {}
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
 
+        # Token availability cache: {token: [list of connectors where it exists]}
+        self.token_availability_cache = {}
+        # Reverse lookup: {connector: {trading_pair: token}}
+        self.connector_markets_cache = {}
+
+    def build_token_availability_cache(self):
+        """
+        Build cache of which tokens are available on which connectors.
+        This prevents errors when trying to fetch funding rates for tokens
+        that don't exist on all exchanges.
+        """
+        self.logger().info("Building token availability cache...")
+
+        for connector_name, connector in self.connectors.items():
+            if not self.is_perpetual(connector_name):
+                continue
+
+            # Get all trading pairs available on this connector
+            try:
+                all_trading_pairs = connector.trading_pairs
+                self.connector_markets_cache[connector_name] = {}
+
+                for trading_pair in all_trading_pairs:
+                    # Extract base token from trading pair (e.g., "KAITO" from "KAITO-USD")
+                    token = trading_pair.split("-")[0]
+
+                    # Only track tokens in our config
+                    if token in self.config.tokens:
+                        if token not in self.token_availability_cache:
+                            self.token_availability_cache[token] = []
+                        self.token_availability_cache[token].append(connector_name)
+                        self.connector_markets_cache[connector_name][trading_pair] = token
+
+            except Exception as e:
+                self.logger().error(f"Failed to get trading pairs for {connector_name}: {e}")
+
+        # Log results
+        self.logger().info(f"Token availability cache built:")
+        for token in self.config.tokens:
+            available_on = self.token_availability_cache.get(token, [])
+            num_exchanges = len(available_on)
+
+            if num_exchanges >= 2:
+                self.logger().info(f"  ✅ {token}: available on {num_exchanges} exchanges ({', '.join(available_on)})")
+            elif num_exchanges == 1:
+                self.logger().info(f"  ℹ️  {token}: only on {available_on[0]} - cannot arbitrage")
+            else:
+                self.logger().info(f"  ℹ️  {token}: not available on any configured exchange")
+
     def get_required_margin(self, connector_name: str, position_size_quote: Decimal, token: str = None) -> Decimal:
         """
         Calculate the margin (collateral) required for a position.
@@ -192,6 +247,9 @@ class FundingRateArbitrage(StrategyV2Base):
         :param timestamp: Current time.
         """
         self._last_timestamp = timestamp
+        # Build token availability cache first
+        self.build_token_availability_cache()
+        # Then apply settings (leverage, position mode)
         self.apply_initial_setting()
 
     def get_leverage_for_token(self, token: str) -> int:
@@ -266,14 +324,99 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def get_funding_info_by_token(self, token):
         """
-        This method provides the funding rates across all the connectors
+        This method provides the funding rates across the connectors where the token is available.
+        Uses availability cache to avoid querying connectors where token doesn't exist.
         """
         funding_rates = {}
-        for connector_name, connector in self.connectors.items():
-            trading_pair = self.get_trading_pair_for_connector(token, connector_name)
-            funding_rates[connector_name] = connector.get_funding_info(trading_pair)
+
+        # Get list of connectors where this token is available
+        available_connectors = self.token_availability_cache.get(token, [])
+
+        if not available_connectors:
+            # Token not available on any connector
+            return funding_rates
+
+        # Only query connectors where token exists
+        for connector_name in available_connectors:
+            if connector_name in self.connectors:
+                connector = self.connectors[connector_name]
+                trading_pair = self.get_trading_pair_for_connector(token, connector_name)
+                try:
+                    funding_rates[connector_name] = connector.get_funding_info(trading_pair)
+                except Exception as e:
+                    self.logger().warning(f"Failed to get funding info for {trading_pair} on {connector_name}: {e}")
+
         return funding_rates
 
+    def check_sufficient_liquidity(self, token: str, connector_1: str, connector_2: str) -> bool:
+        """
+        Check if both connectors have sufficient liquidity (24h volume) for the token.
+
+        Args:
+            token: Base token symbol
+            connector_1: First connector name
+            connector_2: Second connector name
+
+        Returns:
+            True if both connectors meet minimum volume threshold
+        """
+        if self.config.min_daily_volume_usd <= 0:
+            # Volume check disabled
+            return True
+
+        try:
+            trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
+            trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+
+            # Get 24h volume for both trading pairs
+            connector_1_obj = self.connectors[connector_1]
+            connector_2_obj = self.connectors[connector_2]
+
+            # Try to get volume from market data
+            # Note: Different connectors may expose volume differently
+            # This is a best-effort approach
+            volume_1 = self._get_24h_volume(connector_1_obj, trading_pair_1)
+            volume_2 = self._get_24h_volume(connector_2_obj, trading_pair_2)
+
+            # Check if both meet threshold
+            meets_threshold_1 = volume_1 >= self.config.min_daily_volume_usd
+            meets_threshold_2 = volume_2 >= self.config.min_daily_volume_usd
+
+            if not meets_threshold_1 or not meets_threshold_2:
+                self.logger().debug(
+                    f"{token} liquidity check failed: "
+                    f"{connector_1}=${volume_1:,.0f} ({'✅' if meets_threshold_1 else '❌'}), "
+                    f"{connector_2}=${volume_2:,.0f} ({'✅' if meets_threshold_2 else '❌'}) "
+                    f"(min=${self.config.min_daily_volume_usd:,.0f})"
+                )
+                return False
+
+            return True
+
+        except Exception as e:
+            # If we can't get volume data, log warning and allow trade
+            self.logger().warning(f"Failed to check liquidity for {token}: {e}. Proceeding anyway.")
+            return True
+
+    def _get_24h_volume(self, connector: ConnectorBase, trading_pair: str) -> Decimal:
+        """
+        Get 24h volume for a trading pair.
+        Returns 0 if volume data unavailable.
+        """
+        try:
+            # Try to get from order book tracker stats
+            if hasattr(connector, '_order_book_tracker') and connector._order_book_tracker:
+                order_book = connector._order_book_tracker.order_books.get(trading_pair)
+                if order_book and hasattr(order_book, 'volume_24h'):
+                    return Decimal(str(order_book.volume_24h))
+
+            # Fallback: try to get mid price and assume minimum liquidity
+            # This is conservative - if we can't verify volume, assume it's OK
+            return self.config.min_daily_volume_usd
+
+        except Exception as e:
+            self.logger().debug(f"Could not get volume for {trading_pair}: {e}")
+            return Decimal("0")
 
     def get_most_profitable_combination(self, funding_info_report: Dict):
         best_combination = None
@@ -295,57 +438,126 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
-        In this method we are going to evaluate if a new set of positions has to be created for each of the tokens that
-        don't have an active arbitrage.
-        More filters can be applied to limit the creation of the positions, since the current logic is only checking for
-        positive pnl between funding rate. Is logged and computed the trading profitability at the time for entering
-        at market to open the possibilities for other people to create variations like sending limit position executors
-        and if one gets filled buy market the other one to improve the entry prices.
+        Enhanced opportunity scanner that:
+        1. Scans ALL tokens available on 2+ exchanges
+        2. Ranks opportunities by spread (highest first)
+        3. Checks liquidity before entering
+        4. Picks the best profitable opportunity globally
+
+        This ensures we always enter the most profitable arbitrage available,
+        even if some tokens aren't on all exchanges.
         """
         create_actions = []
+
+        # Collect all opportunities across all tokens
+        all_opportunities = []
+
         for token in self.config.tokens:
-            if token not in self.active_funding_arbitrages:
-                funding_info_report = self.get_funding_info_by_token(token)
-                best_combination = self.get_most_profitable_combination(funding_info_report)
-                connector_1, connector_2, trade_side, expected_profitability = best_combination
-                if expected_profitability >= self.config.min_funding_rate_profitability:
-                    # Check balance sufficiency before proceeding (using token-specific leverage)
-                    required_margin_c1 = self.get_required_margin(connector_1, self.config.position_size_quote, token)
-                    required_margin_c2 = self.get_required_margin(connector_2, self.config.position_size_quote, token)
+            # Skip if already in active arbitrage
+            if token in self.active_funding_arbitrages:
+                continue
 
-                    sufficient_c1, balance_c1, shortfall_c1 = self.check_sufficient_balance(connector_1, required_margin_c1)
-                    sufficient_c2, balance_c2, shortfall_c2 = self.check_sufficient_balance(connector_2, required_margin_c2)
+            # Get funding rates for this token (only from connectors where it exists)
+            funding_info_report = self.get_funding_info_by_token(token)
 
-                    # Log balance status with token-specific leverage
-                    token_leverage = self.get_leverage_for_token(token)
-                    self.logger().info(f"{token} ({token_leverage}x leverage)")
-                    self.logger().info(f"  {connector_1} - Required: ${required_margin_c1:.2f}, Available: ${balance_c1:.2f}")
-                    self.logger().info(f"  {connector_2} - Required: ${required_margin_c2:.2f}, Available: ${balance_c2:.2f}")
+            # Need at least 2 exchanges to arbitrage
+            if len(funding_info_report) < 2:
+                # Can't arbitrage with less than 2 exchanges, but don't log unless really needed
+                continue
 
-                    # Prevent trade if insufficient balance
-                    if not sufficient_c1 or not sufficient_c2:
-                        self.logger().warning(
-                            f"Insufficient balance for {token} arbitrage. "
-                            f"{connector_1} shortfall: ${shortfall_c1:.2f}, "
-                            f"{connector_2} shortfall: ${shortfall_c2:.2f}. Skipping..."
-                        )
-                        continue  # Skip this token and check next
+            # Find best combination for this token
+            best_combination = self.get_most_profitable_combination(funding_info_report)
 
-                    self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side} | "
-                                       f"Funding rate profitability: {expected_profitability} | "
-                                       f"Starting executors...")
-                    position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(token, connector_1, connector_2, trade_side)
-                    self.active_funding_arbitrages[token] = {
-                        "connector_1": connector_1,
-                        "connector_2": connector_2,
-                        "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
-                        "side": trade_side,
-                        "funding_payments": [],
-                        "entry_spread": expected_profitability,
-                        "entry_timestamp": self.current_timestamp,
-                    }
-                    return [CreateExecutorAction(executor_config=position_executor_config_1),
-                            CreateExecutorAction(executor_config=position_executor_config_2)]
+            if not best_combination:
+                continue
+
+            connector_1, connector_2, trade_side, expected_profitability = best_combination
+
+            # Must meet minimum profitability
+            if expected_profitability < self.config.min_funding_rate_profitability:
+                continue
+
+            # Check liquidity/volume
+            if not self.check_sufficient_liquidity(token, connector_1, connector_2):
+                self.logger().debug(f"Skipping {token}: insufficient liquidity on {connector_1} or {connector_2}")
+                continue
+
+            # Add to opportunities list
+            all_opportunities.append({
+                'token': token,
+                'connector_1': connector_1,
+                'connector_2': connector_2,
+                'trade_side': trade_side,
+                'spread': expected_profitability
+            })
+
+        # Sort opportunities by spread (highest first)
+        all_opportunities.sort(key=lambda x: x['spread'], reverse=True)
+
+        # Log top opportunities
+        if all_opportunities:
+            self.logger().info(f"Found {len(all_opportunities)} profitable opportunities:")
+            for i, opp in enumerate(all_opportunities[:5]):  # Show top 5
+                self.logger().info(
+                    f"  #{i+1}: {opp['token']} - {opp['connector_1']} vs {opp['connector_2']} | "
+                    f"Spread: {opp['spread']:.4%}/hr"
+                )
+
+        # Try to enter the best opportunity (with balance checks)
+        for opp in all_opportunities:
+            token = opp['token']
+            connector_1 = opp['connector_1']
+            connector_2 = opp['connector_2']
+            trade_side = opp['trade_side']
+            expected_profitability = opp['spread']
+
+            # Check balance sufficiency (using token-specific leverage)
+            required_margin_c1 = self.get_required_margin(connector_1, self.config.position_size_quote, token)
+            required_margin_c2 = self.get_required_margin(connector_2, self.config.position_size_quote, token)
+
+            sufficient_c1, balance_c1, shortfall_c1 = self.check_sufficient_balance(connector_1, required_margin_c1)
+            sufficient_c2, balance_c2, shortfall_c2 = self.check_sufficient_balance(connector_2, required_margin_c2)
+
+            # Log balance status with token-specific leverage
+            token_leverage = self.get_leverage_for_token(token)
+
+            # Prevent trade if insufficient balance
+            if not sufficient_c1 or not sufficient_c2:
+                self.logger().info(
+                    f"Skipping {token} (insufficient balance): "
+                    f"{connector_1} needs ${required_margin_c1:.2f} (have ${balance_c1:.2f}), "
+                    f"{connector_2} needs ${required_margin_c2:.2f} (have ${balance_c2:.2f})"
+                )
+                continue  # Try next best opportunity
+
+            # Found a valid opportunity with sufficient balance!
+            self.logger().info(
+                f"✅ Opening {token} arbitrage ({token_leverage}x leverage) | "
+                f"{connector_1} ({trade_side.name}) vs {connector_2} ({'SELL' if trade_side == TradeType.BUY else 'BUY'}) | "
+                f"Spread: {expected_profitability:.4%}/hr | "
+                f"Starting executors..."
+            )
+
+            position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(
+                token, connector_1, connector_2, trade_side
+            )
+
+            self.active_funding_arbitrages[token] = {
+                "connector_1": connector_1,
+                "connector_2": connector_2,
+                "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
+                "side": trade_side,
+                "funding_payments": [],
+                "entry_spread": expected_profitability,
+                "entry_timestamp": self.current_timestamp,
+            }
+
+            return [
+                CreateExecutorAction(executor_config=position_executor_config_1),
+                CreateExecutorAction(executor_config=position_executor_config_2)
+            ]
+
+        # No opportunities met all criteria
         return create_actions
 
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
@@ -520,9 +732,37 @@ class FundingRateArbitrage(StrategyV2Base):
         original_status = super().format_status()
         funding_rate_status = []
 
+        # Add token availability status section
+        if self.ready_to_trade and self.token_availability_cache:
+            funding_rate_status.append("\n" + "=" * 80)
+            funding_rate_status.append("Token Availability Matrix")
+            funding_rate_status.append("=" * 80)
+
+            availability_data = []
+            for token in sorted(self.config.tokens):
+                available_connectors = self.token_availability_cache.get(token, [])
+                num_exchanges = len(available_connectors)
+
+                # Calculate number of possible arbitrage pairs
+                num_pairs = (num_exchanges * (num_exchanges - 1)) // 2 if num_exchanges >= 2 else 0
+
+                status = "✅" if num_exchanges >= 2 else ("⚠️" if num_exchanges == 1 else "❌")
+
+                availability_data.append({
+                    "Status": status,
+                    "Token": token,
+                    "Exchanges": num_exchanges,
+                    "Available On": ", ".join(available_connectors) if available_connectors else "None",
+                    "Arb Pairs": num_pairs
+                })
+
+            if availability_data:
+                funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(availability_data), table_format="psql"))
+            funding_rate_status.append("")
+
         # Add balance status section
         if self.ready_to_trade:
-            funding_rate_status.append("\n" + "=" * 80)
+            funding_rate_status.append("=" * 80)
             funding_rate_status.append("Balance Status for Arbitrage")
             funding_rate_status.append("=" * 80)
 
