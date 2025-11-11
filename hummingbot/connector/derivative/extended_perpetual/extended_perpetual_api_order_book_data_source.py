@@ -62,6 +62,12 @@ class ExtendedPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
         This is CRITICAL for the funding rate arbitrage strategy!
 
+        Optimized to use single market stats API call which includes:
+        - Current funding rate
+        - Mark price
+        - Index price  
+        - Next funding time
+
         Args:
             trading_pair: Trading pair (e.g., "KAITO-USD")
 
@@ -71,52 +77,30 @@ class ExtendedPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         ex_trading_pair = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
         market_name = ex_trading_pair  # Extended uses "KAITO-USD" format directly
 
-        # Get market stats for mark/index prices
+        # Get market stats - includes funding rate, mark/index prices, and next funding time
+        # This is more efficient than making separate calls
         stats_path = CONSTANTS.MARKET_STATS_URL.format(market=market_name)
         stats_response = await self._connector._api_get(
             path_url=stats_path,
             limit_id=CONSTANTS.MARKET_STATS_URL
         )
 
-        # Get latest funding rate
-        # Extended: GET /api/v1/info/{market}/funding
-        # Returns: {"status": "OK", "data": [{"m": "KAITO-USD", "T": timestamp, "f": "0.0001"}, ...]}
-        funding_path = CONSTANTS.FUNDING_RATE_URL.format(market=market_name)
-
-        # Get last funding rate (most recent record)
-        end_time = int(time.time() * 1000)
-        start_time = end_time - (3600 * 1000)  # Last hour
-
-        funding_response = await self._connector._api_get(
-            path_url=funding_path,
-            params={"startTime": start_time, "endTime": end_time, "limit": 1},
-            limit_id=CONSTANTS.FUNDING_RATE_URL
-        )
-
-        # Parse response
-        if isinstance(funding_response, dict) and 'data' in funding_response:
-            funding_data = funding_response['data']
-            if funding_data and len(funding_data) > 0:
-                latest_funding = funding_data[-1]  # Most recent
-                funding_rate = Decimal(latest_funding.get('f', '0'))
-            else:
-                funding_rate = Decimal('0')
-        else:
-            funding_rate = Decimal('0')
-
-        # Parse stats for prices
+        # Parse response - market stats includes all funding info
+        # Response format: {"status": "OK", "data": {"fundingRate": "0.000013", "markPrice": "0.335...", ...}}
         if isinstance(stats_response, dict) and 'data' in stats_response:
             stats = stats_response['data']
+            funding_rate = Decimal(stats.get('fundingRate', '0'))
             mark_price = Decimal(stats.get('markPrice', '0'))
             index_price = Decimal(stats.get('indexPrice', mark_price))  # Fallback to mark if no index
+            
+            # nextFundingRate is timestamp in milliseconds
+            next_funding_timestamp = int(stats.get('nextFundingRate', 0)) // 1000  # Convert to seconds
         else:
-            # Fallback: fetch last traded price
+            # Fallback values if API call fails
+            funding_rate = Decimal('0')
             mark_price = Decimal(str(await self._connector._get_last_traded_price(trading_pair)))
             index_price = mark_price
-
-        # Calculate next funding time
-        # Extended has 8-hour funding intervals (00:00, 08:00, 16:00 UTC)
-        next_funding_timestamp = self._next_funding_time()
+            next_funding_timestamp = self._next_funding_time()
 
         funding_info = FundingInfo(
             trading_pair=trading_pair,
@@ -290,10 +274,23 @@ class ExtendedPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
     async def listen_for_subscriptions(self):
         """
-        Listen to orderbook updates via HTTP streaming (Server-Sent Events).
+        Listen to orderbook updates via REST API polling.
 
-        Overrides base class WebSocket implementation with HTTP streaming.
-        Extended Exchange uses HTTP GET streaming instead of WebSocket.
+        POLLING MODE: Extended's streaming endpoints are not yet deployed.
+        This uses REST API polling as the default method until streaming becomes available.
+
+        Overrides base class WebSocket implementation with REST polling.
+        Polling interval: 2 seconds (configurable in _listen_for_subscriptions_polling).
+        """
+        # Use REST API polling mode directly (streaming endpoints not yet available)
+        self.logger().info("Using REST API polling mode for Extended orderbook updates")
+        await self._listen_for_subscriptions_polling()
+
+    async def _listen_for_subscriptions_streaming(self):
+        """
+        Listen via HTTP streaming (original implementation).
+        
+        This will be used once Extended deploys streaming endpoints.
         """
         # Create separate streaming tasks for each trading pair
         tasks = []
@@ -303,6 +300,42 @@ class ExtendedPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
         # Wait for all streaming tasks
         await asyncio.gather(*tasks)
+
+    async def _listen_for_subscriptions_polling(self):
+        """
+        Listen via REST API polling (fallback mode).
+        
+        Polls orderbook snapshots periodically when streaming is unavailable.
+        This is the current workaround until Extended deploys streaming endpoints.
+        """
+        polling_interval = 2.0  # Poll every 2 seconds
+        
+        while True:
+            try:
+                for trading_pair in self._trading_pairs:
+                    try:
+                        # Fetch orderbook snapshot
+                        snapshot_msg = await self._order_book_snapshot(trading_pair)
+                        
+                        # Put snapshot into the appropriate queue
+                        self._message_queue[self._snapshot_messages_queue_key].put_nowait(snapshot_msg)
+                        
+                    except Exception as e:
+                        self.logger().error(
+                            f"Error fetching orderbook for {trading_pair}: {e}",
+                            exc_info=True
+                        )
+                
+                # Wait before next poll
+                await self._sleep(polling_interval)
+                
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().exception(
+                    "Unexpected error in orderbook polling loop. Retrying in 5 seconds..."
+                )
+                await self._sleep(5.0)
 
     async def _listen_for_orderbook_stream(self, trading_pair: str):
         """
