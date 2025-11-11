@@ -16,8 +16,8 @@ TESTNET_BASE_URL = "https://testnet.zklighter.elliot.ai"  # If testnet exists
 PERPETUAL_WS_URL = "wss://mainnet.zklighter.elliot.ai/stream"
 TESTNET_WS_URL = "wss://testnet.zklighter.elliot.ai/stream"
 
-# Funding rate update interval (1 hour for Lighter)
-FUNDING_RATE_UPDATE_INTERNAL_SECOND = 60 * 60 * 1  # 1 hour
+# Funding rate update interval (30 seconds for Lighter)
+FUNDING_RATE_UPDATE_INTERNAL_SECOND = 30  # 30 seconds
 
 # Quote currency
 CURRENCY = "USD"

@@ -12,17 +12,18 @@ TESTNET_DOMAIN = "extended_perpetual_testnet"
 PERPETUAL_BASE_URL = "https://api.starknet.extended.exchange"
 TESTNET_BASE_URL = "https://starknet.sepolia.extended.exchange"
 
-# HTTP Streaming URLs (Extended uses HTTP GET streaming, not WebSocket)
-PERPETUAL_STREAM_URL = "http://api.starknet.extended.exchange"
-TESTNET_STREAM_URL = "http://starknet.sepolia.extended.exchange"
+# HTTP Streaming URLs (Extended uses HTTPS GET streaming, not WebSocket)
+# Public streams use stream.extended.exchange domain
+PERPETUAL_STREAM_URL = "https://stream.extended.exchange"
+TESTNET_STREAM_URL = "https://stream.extended.exchange"  # Testnet may use different subdomain
 
 # WebSocket URLs (DEPRECATED - Extended uses HTTP streaming instead)
 PERPETUAL_WS_URL = "wss://api.starknet.extended.exchange/stream.extended.exchange/v1"
 TESTNET_WS_URL = "wss://starknet.sepolia.extended.exchange/stream.extended.exchange/v1"
 
-# Funding rate update interval (1 hour for Extended)
-# Note: Extended funding payments occur hourly
-FUNDING_RATE_UPDATE_INTERNAL_SECOND = 60 * 60 * 1  # 1 hour
+# Funding rate update interval (30 seconds for Extended)
+# Note: Extended funding payments occur every 8 hours, but we poll rates every 30s for faster arbitrage detection
+FUNDING_RATE_UPDATE_INTERNAL_SECOND = 30  # 30 seconds
 
 # Quote currency
 CURRENCY = "USD"
@@ -38,8 +39,9 @@ OPEN_INTEREST_URL = "/api/v1/info/{market}/open-interests"
 TICKER_PRICE_CHANGE_URL = "/api/v1/info/markets/{market}/stats"
 
 # HTTP Streaming Endpoints (Server-Sent Events)
-STREAM_ORDERBOOK_URL = "/stream.extended.exchange/v1/orderbooks/{market}"
-STREAM_ACCOUNT_URL = "/stream.extended.exchange/v1/account"
+# Note: These paths are used with PERPETUAL_STREAM_URL base
+STREAM_ORDERBOOK_URL = "/v1/orderbooks/{market}"
+STREAM_ACCOUNT_URL = "/v1/account"
 
 # API Endpoints - Private (Account)
 ACCOUNT_INFO_URL = "/api/v1/user/account/info"
