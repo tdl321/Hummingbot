@@ -57,6 +57,7 @@ def main():
         "bidict>=0.22.1",
         "bip-utils",
         "cachetools>=5.3.1",
+        "cairo-lang>=0.13.0",
         "commlib-py>=0.11",
         "cryptography>=41.0.2",
         "eth-account>=0.13.0",
