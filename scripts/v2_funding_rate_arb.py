@@ -8,7 +8,7 @@ from pydantic import Field, field_validator
 from hummingbot.client.ui.interface_utils import format_df_for_printout
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.clock import Clock
-from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PriceType, TradeType
+from hummingbot.core.data_type.common import OrderType, PositionMode, PriceType, TradeType
 from hummingbot.core.event.events import FundingPaymentCompletedEvent
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase
@@ -28,7 +28,7 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     min_funding_rate_profitability: Decimal = Field(
         default=0.003,
         json_schema_extra={
-            "prompt": lambda mi: "Enter the min funding rate profitability to enter in a position (e.g. 0.003): ",
+            "prompt": lambda mi: "Enter the min funding rate profitability per hour to enter in a position (e.g. 0.003 for 0.3%/hr): ",
             "prompt_on_new": True}
     )
     connectors: Set[str] = Field(
@@ -51,7 +51,7 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     absolute_min_spread_exit: Decimal = Field(
         default=0.002,
         json_schema_extra={
-            "prompt": lambda mi: "Enter the absolute minimum spread for exit (e.g. 0.002 for 0.2%): ",
+            "prompt": lambda mi: "Enter the absolute minimum spread per hour for exit (e.g. 0.002 for 0.2%/hr): ",
             "prompt_on_new": True}
     )
     compression_exit_threshold: Decimal = Field(
@@ -72,10 +72,10 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the max loss per position % (e.g. 0.03 for 3%): ",
             "prompt_on_new": True}
     )
-    trade_profitability_condition_to_enter: bool = Field(
-        default=False,
+    order_price_buffer_pct: Decimal = Field(
+        default=0.005,
         json_schema_extra={
-            "prompt": lambda mi: "Do you want to check the trade profitability condition to enter? (True/False): ",
+            "prompt": lambda mi: "Enter order price buffer % for limit orders (e.g. 0.005 for 0.5%): ",
             "prompt_on_new": True}
     )
     min_balance_threshold: Decimal = Field(
@@ -106,7 +106,24 @@ class FundingRateArbitrage(StrategyV2Base):
         "binance_perpetual": 60 * 60 * 8,
         "hyperliquid_perpetual": 60 * 60 * 1
     }
-    funding_profitability_interval = 60 * 60 * 24
+    funding_profitability_interval = 60 * 60 * 1  # 1 hour (changed from 24 hours)
+
+    # Lighter max leverage per token (also applied to Extended for consistency)
+    # Lighter always has lower leverage limits, so we use these for both exchanges
+    lighter_max_leverage_by_token = {
+        "KAITO": 5,
+        "MON": 3,
+        "IP": 10,
+        "GRASS": 5,
+        "ZEC": 5,
+        "APT": 10,
+        "SUI": 10,
+        "TRUMP": 10,
+        "LDO": 10,
+        "OP": 15,
+        "SEI": 10,
+        "MEGA": 3,
+    }
 
     @classmethod
     def get_trading_pair_for_connector(cls, token, connector):
@@ -126,19 +143,26 @@ class FundingRateArbitrage(StrategyV2Base):
         self.active_funding_arbitrages = {}
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
 
-    def get_required_margin(self, connector_name: str, position_size_quote: Decimal) -> Decimal:
+    def get_required_margin(self, connector_name: str, position_size_quote: Decimal, token: str = None) -> Decimal:
         """
         Calculate the margin (collateral) required for a position.
 
         Args:
             connector_name: Exchange connector name
             position_size_quote: Position size in quote currency (USD)
+            token: Token symbol (optional, uses config leverage if not provided)
 
         Returns:
             Required margin in quote currency with 10% safety buffer
         """
+        # Get leverage for this token (if specified), otherwise use config leverage
+        if token:
+            leverage = Decimal(str(self.get_leverage_for_token(token)))
+        else:
+            leverage = Decimal(str(self.config.leverage))
+
         # Margin = Position Size / Leverage
-        required_margin = position_size_quote / Decimal(str(self.config.leverage))
+        required_margin = position_size_quote / leverage
 
         # Add 10% safety buffer for fees and price slippage
         safety_buffer = Decimal("1.1")
@@ -170,34 +194,75 @@ class FundingRateArbitrage(StrategyV2Base):
         self._last_timestamp = timestamp
         self.apply_initial_setting()
 
+    def get_leverage_for_token(self, token: str) -> int:
+        """
+        Get the leverage to use for a given token.
+
+        Since Lighter always has lower leverage limits than Extended,
+        we use Lighter's max leverage for both exchanges to ensure consistency.
+
+        Args:
+            token: Base token (e.g., "KAITO", "IP", "TRUMP")
+
+        Returns:
+            Leverage to use for this token on both exchanges
+        """
+        # Get Lighter's max leverage for this token (default to 5x if not specified)
+        lighter_max = self.lighter_max_leverage_by_token.get(token, 5)
+
+        # Use the minimum of Lighter's max and user's configured leverage
+        return min(lighter_max, self.config.leverage)
+
     def apply_initial_setting(self):
+        """
+        Apply initial settings: position mode and per-token leverage.
+
+        Leverage is set per token based on Lighter's max leverage (applied to both exchanges).
+        """
+        # Set position mode for all connectors
         for connector_name, connector in self.connectors.items():
             if self.is_perpetual(connector_name):
                 position_mode = PositionMode.ONEWAY if connector_name in ["hyperliquid_perpetual", "extended_perpetual", "lighter_perpetual"] else PositionMode.HEDGE
                 connector.set_position_mode(position_mode)
-                for trading_pair in self.market_data_provider.get_trading_pairs(connector_name):
-                    connector.set_leverage(trading_pair, self.config.leverage)
+
+        # Set leverage per token (using Lighter's max leverage for both exchanges)
+        self.logger().info("Setting leverage per token (based on Lighter limits)...")
+        leverage_by_token = {}
+
+        for token in self.config.tokens:
+            # Get leverage for this token (Lighter's max, capped by user config)
+            token_leverage = self.get_leverage_for_token(token)
+            leverage_by_token[token] = token_leverage
+
+            # Set leverage on all connectors for this token
+            for connector_name, connector in self.connectors.items():
+                if self.is_perpetual(connector_name):
+                    trading_pair = self.get_trading_pair_for_connector(token, connector_name)
+                    try:
+                        connector.set_leverage(trading_pair, token_leverage)
+                        self.logger().info(f"✓ {token}: {token_leverage}x on {connector_name}")
+                    except Exception as e:
+                        self.logger().warning(f"✗ Could not set leverage for {trading_pair} on {connector_name}: {e}")
+
+        self.logger().info(f"Leverage configuration: {leverage_by_token}")
 
         # Check initial balances on startup
-        self.logger().info("Checking initial balances...")
+        self.logger().info("\nChecking initial balances...")
         for connector_name, connector in self.connectors.items():
             if self.is_perpetual(connector_name):
                 quote_asset = self.quote_markets_map.get(connector_name, "USDT")
                 available = connector.get_available_balance(quote_asset)
-                required = self.get_required_margin(connector_name, self.config.position_size_quote)
 
-                if available < required:
-                    self.logger().warning(
-                        f"⚠️ {connector_name} has insufficient balance! "
-                        f"Available: ${available:.2f}, Required: ${required:.2f} "
-                        f"(shortfall: ${required - available:.2f})"
-                    )
-                else:
-                    max_positions = int(available / required)
-                    self.logger().info(
-                        f"✅ {connector_name}: ${available:.2f} available "
-                        f"(can open up to {max_positions} positions)"
-                    )
+                # Calculate rough position capacity (using average leverage)
+                avg_leverage = sum(leverage_by_token.values()) / len(leverage_by_token) if leverage_by_token else self.config.leverage
+                approx_required = self.config.position_size_quote / Decimal(str(avg_leverage)) * Decimal("1.1")
+
+                max_positions = int(available / approx_required) if approx_required > 0 else 0
+
+                self.logger().info(
+                    f"{'✅' if available >= approx_required else '⚠️'} {connector_name}: "
+                    f"${available:.2f} available (can open ~{max_positions} positions at avg {avg_leverage:.1f}x leverage)"
+                )
 
     def get_funding_info_by_token(self, token):
         """
@@ -209,52 +274,6 @@ class FundingRateArbitrage(StrategyV2Base):
             funding_rates[connector_name] = connector.get_funding_info(trading_pair)
         return funding_rates
 
-    def get_current_profitability_after_fees(self, token: str, connector_1: str, connector_2: str, side: TradeType):
-        """
-        This methods compares the profitability of buying at market in the two exchanges. If the side is TradeType.BUY
-        means that the operation is long on connector 1 and short on connector 2.
-        """
-        trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
-        trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
-
-        connector_1_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
-            connector_name=connector_1,
-            trading_pair=trading_pair_1,
-            quote_volume=self.config.position_size_quote,
-            is_buy=side == TradeType.BUY,
-        ).result_price)
-        connector_2_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
-            connector_name=connector_2,
-            trading_pair=trading_pair_2,
-            quote_volume=self.config.position_size_quote,
-            is_buy=side != TradeType.BUY,
-        ).result_price)
-        estimated_fees_connector_1 = self.connectors[connector_1].get_fee(
-            base_currency=trading_pair_1.split("-")[0],
-            quote_currency=trading_pair_1.split("-")[1],
-            order_type=OrderType.MARKET,
-            order_side=TradeType.BUY,
-            amount=self.config.position_size_quote / connector_1_price,
-            price=connector_1_price,
-            is_maker=False,
-            position_action=PositionAction.OPEN
-        ).percent
-        estimated_fees_connector_2 = self.connectors[connector_2].get_fee(
-            base_currency=trading_pair_2.split("-")[0],
-            quote_currency=trading_pair_2.split("-")[1],
-            order_type=OrderType.MARKET,
-            order_side=TradeType.BUY,
-            amount=self.config.position_size_quote / connector_2_price,
-            price=connector_2_price,
-            is_maker=False,
-            position_action=PositionAction.OPEN
-        ).percent
-
-        if side == TradeType.BUY:
-            estimated_trade_pnl_pct = (connector_2_price - connector_1_price) / connector_1_price
-        else:
-            estimated_trade_pnl_pct = (connector_1_price - connector_2_price) / connector_2_price
-        return estimated_trade_pnl_pct - estimated_fees_connector_1 - estimated_fees_connector_2
 
     def get_most_profitable_combination(self, funding_info_report: Dict):
         best_combination = None
@@ -290,16 +309,18 @@ class FundingRateArbitrage(StrategyV2Base):
                 best_combination = self.get_most_profitable_combination(funding_info_report)
                 connector_1, connector_2, trade_side, expected_profitability = best_combination
                 if expected_profitability >= self.config.min_funding_rate_profitability:
-                    # Check balance sufficiency before proceeding
-                    required_margin_c1 = self.get_required_margin(connector_1, self.config.position_size_quote)
-                    required_margin_c2 = self.get_required_margin(connector_2, self.config.position_size_quote)
+                    # Check balance sufficiency before proceeding (using token-specific leverage)
+                    required_margin_c1 = self.get_required_margin(connector_1, self.config.position_size_quote, token)
+                    required_margin_c2 = self.get_required_margin(connector_2, self.config.position_size_quote, token)
 
                     sufficient_c1, balance_c1, shortfall_c1 = self.check_sufficient_balance(connector_1, required_margin_c1)
                     sufficient_c2, balance_c2, shortfall_c2 = self.check_sufficient_balance(connector_2, required_margin_c2)
 
-                    # Log balance status
-                    self.logger().info(f"{connector_1} - Required: ${required_margin_c1:.2f}, Available: ${balance_c1:.2f}")
-                    self.logger().info(f"{connector_2} - Required: ${required_margin_c2:.2f}, Available: ${balance_c2:.2f}")
+                    # Log balance status with token-specific leverage
+                    token_leverage = self.get_leverage_for_token(token)
+                    self.logger().info(f"{token} ({token_leverage}x leverage)")
+                    self.logger().info(f"  {connector_1} - Required: ${required_margin_c1:.2f}, Available: ${balance_c1:.2f}")
+                    self.logger().info(f"  {connector_2} - Required: ${required_margin_c2:.2f}, Available: ${balance_c2:.2f}")
 
                     # Prevent trade if insufficient balance
                     if not sufficient_c1 or not sufficient_c2:
@@ -310,19 +331,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         )
                         continue  # Skip this token and check next
 
-                    current_profitability = self.get_current_profitability_after_fees(
-                        token, connector_1, connector_2, trade_side
-                    )
-                    if self.config.trade_profitability_condition_to_enter:
-                        if current_profitability < 0:
-                            self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
-                                               f"Funding rate profitability: {expected_profitability}"
-                                               f"Trading profitability after fees: {current_profitability}"
-                                               f"Trade profitability is negative, skipping...")
-                            continue
-                    self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
-                                       f"Funding rate profitability: {expected_profitability}"
-                                       f"Trading profitability after fees: {current_profitability}"
+                    self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side} | "
+                                       f"Funding rate profitability: {expected_profitability} | "
                                        f"Starting executors...")
                     position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(token, connector_1, connector_2, trade_side)
                     self.active_funding_arbitrages[token] = {
@@ -442,30 +452,67 @@ class FundingRateArbitrage(StrategyV2Base):
             self.active_funding_arbitrages[token]["funding_payments"].append(funding_payment_completed_event)
 
     def get_position_executors_config(self, token, connector_1, connector_2, trade_side):
-        price = self.market_data_provider.get_price_by_type(
+        """
+        Create position executor configurations with LIMIT orders and anti-slippage pricing.
+
+        For limit orders, we price slightly better than mid to ensure fills:
+        - BUY orders: bid slightly higher than mid
+        - SELL orders: ask slightly lower than mid
+
+        Uses token-specific leverage based on Lighter's limits.
+        """
+        # Get mid prices for both connectors
+        mid_price_1 = self.market_data_provider.get_price_by_type(
             connector_name=connector_1,
             trading_pair=self.get_trading_pair_for_connector(token, connector_1),
             price_type=PriceType.MidPrice
         )
-        position_amount = self.config.position_size_quote / price
+        mid_price_2 = self.market_data_provider.get_price_by_type(
+            connector_name=connector_2,
+            trading_pair=self.get_trading_pair_for_connector(token, connector_2),
+            price_type=PriceType.MidPrice
+        )
+
+        # Get token-specific leverage
+        token_leverage = self.get_leverage_for_token(token)
+
+        # Calculate limit prices with buffer to ensure fills
+        # BUY: bid slightly higher, SELL: ask slightly lower
+        if trade_side == TradeType.BUY:
+            entry_price_1 = mid_price_1 * (Decimal("1") + self.config.order_price_buffer_pct)
+        else:
+            entry_price_1 = mid_price_1 * (Decimal("1") - self.config.order_price_buffer_pct)
+
+        # Position 2 is opposite side
+        if trade_side == TradeType.BUY:
+            entry_price_2 = mid_price_2 * (Decimal("1") - self.config.order_price_buffer_pct)
+        else:
+            entry_price_2 = mid_price_2 * (Decimal("1") + self.config.order_price_buffer_pct)
+
+        # Calculate position amounts for each exchange based on their respective entry prices
+        # This ensures both positions have the same USD value
+        position_amount_1 = self.config.position_size_quote / entry_price_1
+        position_amount_2 = self.config.position_size_quote / entry_price_2
 
         position_executor_config_1 = PositionExecutorConfig(
             timestamp=self.current_timestamp,
             connector_name=connector_1,
             trading_pair=self.get_trading_pair_for_connector(token, connector_1),
             side=trade_side,
-            amount=position_amount,
-            leverage=self.config.leverage,
-            triple_barrier_config=TripleBarrierConfig(open_order_type=OrderType.MARKET),
+            entry_price=entry_price_1,
+            amount=position_amount_1,
+            leverage=token_leverage,
+            triple_barrier_config=TripleBarrierConfig(open_order_type=OrderType.LIMIT),
         )
         position_executor_config_2 = PositionExecutorConfig(
             timestamp=self.current_timestamp,
             connector_name=connector_2,
             trading_pair=self.get_trading_pair_for_connector(token, connector_2),
             side=TradeType.BUY if trade_side == TradeType.SELL else TradeType.SELL,
-            amount=position_amount,
-            leverage=self.config.leverage,
-            triple_barrier_config=TripleBarrierConfig(open_order_type=OrderType.MARKET),
+            entry_price=entry_price_2,
+            amount=position_amount_2,
+            leverage=token_leverage,
+            triple_barrier_config=TripleBarrierConfig(open_order_type=OrderType.LIMIT),
         )
         return position_executor_config_1, position_executor_config_2
 
@@ -508,14 +555,11 @@ class FundingRateArbitrage(StrategyV2Base):
                 best_paths_info = {"token": token}
                 funding_info_report = self.get_funding_info_by_token(token)
                 best_combination = self.get_most_profitable_combination(funding_info_report)
-                for connector_name, info in funding_info_report.items():
-                    token_info[f"{connector_name} Rate (%)"] = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_name) * self.funding_profitability_interval * 100
+                for connector_name in funding_info_report.keys():
+                    token_info[f"{connector_name} Rate (%/hr)"] = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_name) * self.funding_profitability_interval * 100
                 connector_1, connector_2, side, funding_rate_diff = best_combination
-                profitability_after_fees = self.get_current_profitability_after_fees(token, connector_1, connector_2, side)
                 best_paths_info["Best Path"] = f"{connector_1}_{connector_2}"
-                best_paths_info["Best Rate Diff (%)"] = funding_rate_diff * 100
-                best_paths_info["Trade Profitability (%)"] = profitability_after_fees * 100
-                best_paths_info["Days Trade Prof"] = - profitability_after_fees / funding_rate_diff
+                best_paths_info["Best Rate Diff (%/hr)"] = funding_rate_diff * 100
 
                 time_to_next_funding_info_c1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                 time_to_next_funding_info_c2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
@@ -524,8 +568,8 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 all_funding_info.append(token_info)
                 all_best_paths.append(best_paths_info)
-            funding_rate_status.append(f"\n\n\nMin Funding Rate Profitability: {self.config.min_funding_rate_profitability:.2%}\n")
-            funding_rate_status.append("Funding Rate Info (Funding Profitability in Days): ")
+            funding_rate_status.append(f"\n\n\nMin Funding Rate Profitability: {self.config.min_funding_rate_profitability:.2%}/hr\n")
+            funding_rate_status.append("Funding Rate Info (Hourly Rates): ")
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format="psql",))
             funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format="psql",))
             for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
