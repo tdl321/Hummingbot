@@ -1,11 +1,13 @@
 # Set the base image
 FROM continuumio/miniconda3:latest AS builder
 
-# Ensure UTF-8 locale (C.UTF-8 is already set in base image, but we explicitly set it for clarity)
+# Ensure UTF-8 locale and Python UTF-8 mode (PEP 540)
 # C.UTF-8 is recommended by Python core developers and doesn't require locale files
+# PYTHONUTF8=1 enables UTF-8 mode for all text I/O (Python 3.7+)
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    PYTHONIOENCODING=utf-8
+    PYTHONIOENCODING=utf-8 \
+    PYTHONUTF8=1
 
 # Install system dependencies
 RUN apt-get update && \
@@ -59,11 +61,13 @@ LABEL branch=${BRANCH}
 LABEL commit=${COMMIT}
 LABEL date=${BUILD_DATE}
 
-# Ensure UTF-8 locale (C.UTF-8 is already set in base image, but we explicitly set it for clarity)
+# Ensure UTF-8 locale and Python UTF-8 mode (PEP 540)
 # C.UTF-8 is recommended by Python core developers and doesn't require locale files
+# PYTHONUTF8=1 enables UTF-8 mode for all text I/O (Python 3.7+)
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    PYTHONIOENCODING=utf-8
+    PYTHONIOENCODING=utf-8 \
+    PYTHONUTF8=1
 
 # Set ENV variables
 ENV COMMIT_SHA=${COMMIT}
