@@ -66,6 +66,7 @@ def main():
         "objgraph",
         "pandas>=2.0.3",
         "pandas-ta>=0.3.14b",
+        "paradex-py>=0.4.6",
         "prompt_toolkit>=3.0.39",
         "protobuf>=4.23.3",
         "psutil>=5.9.5",
