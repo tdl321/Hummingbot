@@ -7,12 +7,12 @@ Successfully adapted the Extended WebSocket connector to use HTTP streaming (Ser
 ## Completed Changes
 
 ### 1. Constants (`extended_perpetual_constants.py`)
-- Added HTTP streaming base URLs:
-  - `PERPETUAL_STREAM_URL = "http://api.starknet.extended.exchange"`
-  - `TESTNET_STREAM_URL = "http://starknet.sepolia.extended.exchange"`
+- Added HTTPS streaming base URLs:
+  - `PERPETUAL_STREAM_URL = "https://stream.extended.exchange"`
+  - `TESTNET_STREAM_URL = "https://stream.extended.exchange"`
 - Added streaming endpoint constants:
-  - `STREAM_ORDERBOOK_URL = "/stream.extended.exchange/v1/orderbooks/{market}"`
-  - `STREAM_ACCOUNT_URL = "/stream.extended.exchange/v1/account"`
+  - `STREAM_ORDERBOOK_URL = "/v1/orderbooks/{market}"`
+  - `STREAM_ACCOUNT_URL = "/v1/account"`
 - Added rate limits for streaming endpoints
 - Marked WebSocket URLs as DEPRECATED
 
@@ -134,19 +134,21 @@ Created `test_http_streaming.py` test script that validates:
 
 ## API Endpoint Status
 
-### ✅ URLs Match Documentation Exactly
+### ✅ URLs Now Match Documentation
 
-Our implementation uses the **exact** URLs from Extended's documentation:
+Updated implementation uses the **correct** URLs per Extended's documentation:
 
-**Orderbook Stream:**
-- Base: `http://api.starknet.extended.exchange`
-- Path: `/stream.extended.exchange/v1/orderbooks/{market}`
-- Full URL: `http://api.starknet.extended.exchange/stream.extended.exchange/v1/orderbooks/KAITO-USD`
+**Orderbook Stream (Public):**
+- Base: `https://stream.extended.exchange`
+- Path: `/v1/orderbooks/{market}`
+- Full URL: `https://stream.extended.exchange/v1/orderbooks/KAITO-USD`
 
-**Account Stream:**
-- Base: `http://api.starknet.extended.exchange`
-- Path: `/stream.extended.exchange/v1/account`
-- Full URL: `http://api.starknet.extended.exchange/stream.extended.exchange/v1/account`
+**Account Stream (Private):**
+- Base: `https://stream.extended.exchange`
+- Path: `/v1/account`
+- Full URL: `https://stream.extended.exchange/v1/account`
+
+**Key Fix:** Changed from HTTP to HTTPS and corrected the base domain from `api.starknet.extended.exchange` to `stream.extended.exchange`.
 
 ### 🔍 Testing Results
 

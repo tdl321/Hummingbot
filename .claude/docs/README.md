@@ -101,6 +101,58 @@ This directory contains chronologically organized documentation for the Extended
   - Available MCP tools and capabilities
   - Security considerations and best practices
 
+### 2025-11-11: Authentication & Debugging
+- **2025-11-11_CONNECTOR_AUTH_FIXES.md**
+  - Authentication error fixes for Extended and Lighter connectors
+  - Root cause analysis and solutions
+  - API parameter corrections
+
+- **2025-11-11_EXTENDED_AUTH_DEBUG_RESULTS.md**
+  - Extended connector authentication test results
+  - API key validation and header generation tests
+  - Conclusion: Connector code is correct, issue is encrypted config
+
+- **2025-11-11_EXTENDED_HTTP_STREAMING_IMPLEMENTATION.md**
+  - HTTP streaming (SSE) implementation for Extended connector
+  - Server-Sent Events integration
+  - Account and orderbook streaming
+
+- **2025-11-11_EXTENDED_REST_POLLING_WORKAROUND.md**
+  - REST polling fallback implementation
+  - Workaround for streaming endpoint issues
+  - Polling intervals and optimization
+
+- **2025-11-11_EXTENDED_STREAMING_ENDPOINTS_NOT_DEPLOYED.md**
+  - Analysis of Extended streaming endpoint deployment status
+  - DNS resolution issues
+  - Recommendation to use REST polling
+
+- **2025-11-11_DEBUG_INDEX.md** ⭐
+  - Master index for all debug tools and documentation
+  - Quick reference guide
+  - Usage scenarios and workflows
+
+- **2025-11-11_DEBUG_TOOLS_README.md**
+  - Comprehensive debug tools documentation
+  - Tool descriptions and use cases
+  - Common scenarios and solutions
+
+- **2025-11-11_ENCRYPTION_DEBUG_SUMMARY.md**
+  - Complete encryption/decryption system analysis
+  - Root cause identification (wrong credentials in encrypted config)
+  - How the encryption system works
+  - Fix workflow and expected outcomes
+
+- **2025-11-11_RUN_DEBUG_TESTS.md**
+  - Step-by-step guide for running debug tests
+  - Test sequence and expected outputs
+  - Troubleshooting tips
+
+- **2025-11-11_DOCKER_BUILD_CUSTOM_CONNECTORS.md**
+  - Docker build process for custom connectors
+  - Dependency management (lighter-sdk, x10-python-trading)
+  - Build verification and testing
+
 ---
 
 ## Quick Reference
@@ -144,4 +196,17 @@ Standard repository files (README, CONTRIBUTING, CODE_OF_CONDUCT, etc.) remain i
 
 ---
 
-**Last Updated**: 2025-11-10
+## Test Files
+
+Debug and test tools are located in `/test/extended_connector/`:
+- **Diagnostic Tools**: `debug_config_decryption.py`, `debug_connector_init.py`
+- **Fix Tools**: `fix_extended_config.py`, `validate_extended_docker.py`
+- **API Tests**: `test_extended_api_key.py`, `test_extended_auth.py`, `test_extended_headers.py`
+- **Encryption Tests**: `test_encryption_roundtrip.py`
+- **Polling Tests**: `test_extended_polling.py`, `test_extended_polling_simple.py`
+
+See `/test/extended_connector/README.md` for usage instructions.
+
+---
+
+**Last Updated**: 2025-11-11

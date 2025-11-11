@@ -61,7 +61,10 @@ class LighterPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             return  # Already initialized
 
         # GET /api/v1/orderBooks
-        response = await self._connector._api_get(path_url=CONSTANTS.ORDER_BOOKS_URL)
+        response = await self._connector._api_get(
+            path_url=CONSTANTS.ORDER_BOOKS_URL,
+            limit_id=CONSTANTS.ORDER_BOOKS_URL
+        )
 
         if isinstance(response, dict) and 'order_books' in response:
             order_books = response['order_books']
@@ -220,7 +223,11 @@ class LighterPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
         # Lighter: GET /api/v1/orderbook?market_id={id}
         params = {"market_id": market_id}
-        data = await self._connector._api_get(path_url=CONSTANTS.ORDER_BOOK_URL, params=params)
+        data = await self._connector._api_get(
+            path_url=CONSTANTS.ORDER_BOOK_URL,
+            params=params,
+            limit_id=CONSTANTS.ORDER_BOOK_URL
+        )
         return data
 
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:

@@ -257,7 +257,8 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
                 # Fetch account info to get vault ID
                 response = await self._api_get(
                     path_url=CONSTANTS.ACCOUNT_INFO_URL,
-                    is_auth_required=True
+                    is_auth_required=True,
+                    limit_id=CONSTANTS.ACCOUNT_INFO_URL
                 )
 
                 # Parse vault ID from response
@@ -446,7 +447,8 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
             response = await self._api_get(
                 path_url=CONSTANTS.FUNDING_HISTORY_URL,
                 params={"market": ex_trading_pair, "limit": 1},
-                is_auth_required=True
+                is_auth_required=True,
+                limit_id=CONSTANTS.FUNDING_HISTORY_URL
             )
 
             # Parse response
@@ -564,7 +566,7 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
 
         # Extended API: GET /api/v1/info/markets/{market}/stats
         path = CONSTANTS.MARKET_STATS_URL.format(market=ex_trading_pair)
-        response = await self._api_get(path_url=path)
+        response = await self._api_get(path_url=path, limit_id=CONSTANTS.MARKET_STATS_URL)
 
         if isinstance(response, dict) and 'data' in response:
             stats = response['data']
@@ -669,7 +671,8 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
         try:
             response = await self._api_get(
                 path_url=CONSTANTS.BALANCE_URL,
-                is_auth_required=True
+                is_auth_required=True,
+                limit_id=CONSTANTS.BALANCE_URL
             )
 
             if isinstance(response, dict) and response.get('status') == 'OK':
@@ -720,7 +723,8 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
         try:
             response = await self._api_get(
                 path_url=CONSTANTS.POSITIONS_URL,
-                is_auth_required=True
+                is_auth_required=True,
+                limit_id=CONSTANTS.POSITIONS_URL
             )
 
             if isinstance(response, dict) and response.get('status') == 'OK':
