@@ -1,13 +1,18 @@
 """
 EdgeX Perpetual Authentication
 
-Handles ECDSA signature-based authentication for EdgeX API.
+Handles StarkEx signature-based authentication for EdgeX API.
 
-EdgeX uses per-request signature authentication (NOT JWT tokens like Paradex):
-- Each request requires fresh ECDSA signature
+EdgeX uses per-request signature authentication with StarkEx cryptography:
+- Each request requires fresh StarkEx ECDSA signature
 - Signature includes: timestamp + HTTP method + path + sorted parameters
-- SHA3 hashing before ECDSA signing
+- SHA3-256 hashing, then StarkEx signing on STARK curve
 - Headers: X-edgeX-Api-Timestamp and X-edgeX-Api-Signature
+
+CRITICAL: EdgeX uses StarkEx Layer 2 (NOT standard Ethereum ECDSA)
+- Uses STARK curve (not secp256k1)
+- Requires starkware.crypto.signature library
+- Different from eth_account
 
 Reference: https://edgex-1.gitbook.io/edgeX-documentation/api/authentication
 """
@@ -17,8 +22,7 @@ import time
 from typing import Any, Dict
 from urllib.parse import urlencode
 
-from eth_account import Account
-from eth_account.messages import encode_defunct
+from starkware.crypto.signature.signature import sign, private_to_stark_key, FIELD_PRIME
 
 from hummingbot.connector.derivative.edgex_perpetual import edgex_perpetual_constants as CONSTANTS
 from hummingbot.core.web_assistant.auth import AuthBase
@@ -27,16 +31,17 @@ from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RES
 
 class EdgexPerpetualAuth(AuthBase):
     """
-    Authentication handler for EdgeX Perpetual API.
+    Authentication handler for EdgeX Perpetual API using StarkEx cryptography.
 
-    EdgeX uses ECDSA signature authentication where each request must be signed
-    with the user's private key. The signature is generated from:
+    EdgeX uses StarkEx ECDSA signature authentication where each request must be
+    signed with the user's Stark private key. The signature is generated from:
     - Timestamp (milliseconds)
     - HTTP method (GET, POST, etc.)
     - Request path
     - Sorted query parameters or request body
 
-    The message is hashed with SHA3-256, then signed with ECDSA.
+    The message is hashed with SHA3-256, converted to a field element, then
+    signed with StarkEx ECDSA on the STARK curve.
     """
 
     def __init__(
@@ -48,16 +53,19 @@ class EdgexPerpetualAuth(AuthBase):
         Initialize EdgeX authentication handler.
 
         Args:
-            api_secret: Private key for signing requests (hex string with or without 0x prefix)
+            api_secret: Stark private key for signing requests (hex string with or without 0x prefix)
             account_id: EdgeX account ID
         """
         self._api_secret = api_secret
         self._account_id = account_id
 
-        # Initialize eth_account for ECDSA signing
+        # Convert Stark private key to integer
         # Remove '0x' prefix if present
-        private_key = api_secret if not api_secret.startswith('0x') else api_secret[2:]
-        self._account = Account.from_key(private_key)
+        private_key_hex = api_secret if not api_secret.startswith('0x') else api_secret[2:]
+        self._stark_private_key = int(private_key_hex, 16)
+
+        # Calculate Stark public key
+        self._stark_public_key = private_to_stark_key(self._stark_private_key)
 
     def _get_timestamp_ms(self) -> int:
         """
@@ -104,24 +112,38 @@ class EdgexPerpetualAuth(AuthBase):
 
     def _sign_message(self, message: str) -> str:
         """
-        Sign message with ECDSA after SHA3-256 hashing.
+        Sign message with StarkEx ECDSA after SHA3-256 hashing.
 
         Args:
             message: Message string to sign
 
         Returns:
-            Hex signature string
+            Hex signature string (r + s concatenated, 128 hex chars total)
         """
-        # Hash message with SHA3-256
+        # 1. Hash message with SHA3-256
         message_hash = hashlib.sha3_256(message.encode('utf-8')).digest()
 
-        # Sign with ECDSA using eth_account
-        # Note: eth_account expects messages in specific format
-        signable_message = encode_defunct(primitive=message_hash)
-        signed_message = self._account.sign_message(signable_message)
+        # 2. Convert hash to integer (StarkEx field element)
+        # StarkEx uses big-endian byte order
+        message_hash_int = int.from_bytes(message_hash, byteorder='big')
 
-        # Return signature as hex string (without 0x prefix)
-        return signed_message.signature.hex()
+        # 3. Reduce modulo FIELD_PRIME (required for StarkEx)
+        # SHA3-256 produces 256-bit hashes which may exceed the field prime
+        message_hash_int = message_hash_int % FIELD_PRIME
+
+        # 4. Sign with StarkEx ECDSA on STARK curve
+        # Returns (r, s) tuple
+        r, s = sign(msg_hash=message_hash_int, priv_key=self._stark_private_key)
+
+        # 5. Format signature as hex string (64 chars each, no 0x prefix)
+        # r and s are integers, convert to hex and pad to 64 characters
+        r_hex = hex(r)[2:].zfill(64)  # Remove '0x' and pad
+        s_hex = hex(s)[2:].zfill(64)
+
+        # 6. Concatenate r + s (total 128 hex characters)
+        signature = r_hex + s_hex
+
+        return signature
 
     async def rest_authenticate(self, request: RESTRequest) -> RESTRequest:
         """
@@ -194,3 +216,8 @@ class EdgexPerpetualAuth(AuthBase):
     def account_id(self) -> str:
         """Get EdgeX account ID."""
         return self._account_id
+
+    @property
+    def stark_public_key(self) -> int:
+        """Get Stark public key (calculated from private key)."""
+        return self._stark_public_key

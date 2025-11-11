@@ -62,19 +62,17 @@ class EdgeXTestConfig:
 
 
 # ============================================================================
-# StarkEx Signature Implementation (Placeholder)
+# StarkEx Signature Implementation
 # ============================================================================
+
+from starkware.crypto.signature.signature import sign, private_to_stark_key, FIELD_PRIME
+
 
 class StarkExSigner:
     """
     StarkEx signature implementation for EdgeX authentication.
 
-    IMPORTANT: This is a PLACEHOLDER implementation.
-    EdgeX uses StarkEx cryptography which requires the starkware.crypto library.
-
-    TODO: Install and implement proper StarkEx signing:
-        pip install starkex-resources
-        from starkware.crypto.signature.signature import sign
+    Uses starkware.crypto.signature for proper StarkEx ECDSA signing.
     """
 
     def __init__(self, private_key: str):
@@ -82,39 +80,47 @@ class StarkExSigner:
         Initialize StarkEx signer.
 
         Args:
-            private_key: Stark private key (hex string)
+            private_key: Stark private key (hex string, with or without 0x)
         """
-        self.private_key = private_key
         # Remove 0x prefix if present
-        if private_key.startswith('0x'):
-            self.private_key = private_key[2:]
+        private_key_hex = private_key if not private_key.startswith('0x') else private_key[2:]
+
+        # Convert to integer
+        self.private_key_int = int(private_key_hex, 16)
+
+        # Calculate public key
+        self.public_key = private_to_stark_key(self.private_key_int)
 
     def sign_message(self, message: str) -> str:
         """
-        Sign message with StarkEx signature.
+        Sign message with StarkEx ECDSA signature.
 
         Args:
-            message: Message to sign
+            message: Message string to sign
 
         Returns:
-            Hex signature string
-
-        NOTE: This is a PLACEHOLDER. Real implementation needs:
-            1. Hash message with SHA3-256 or Pedersen hash
-            2. Convert to StarkEx field element
-            3. Sign with StarkEx ECDSA on STARK curve
-            4. Format as hex string
+            Hex signature string (r + s concatenated, 128 chars)
         """
-        # TEMPORARY: Using SHA3-256 for now (this will NOT work with real API!)
-        message_hash = hashlib.sha3_256(message.encode('utf-8')).hexdigest()
+        # 1. Hash message with SHA3-256
+        message_hash = hashlib.sha3_256(message.encode('utf-8')).digest()
 
-        print(f"⚠️  WARNING: Using placeholder signature generation!")
-        print(f"   Message: {message[:100]}...")
-        print(f"   Hash: {message_hash}")
-        print(f"   Real EdgeX API will reject this signature!")
+        # 2. Convert to integer (field element)
+        message_hash_int = int.from_bytes(message_hash, byteorder='big')
 
-        # Return fake signature (64 bytes hex)
-        return message_hash + "0" * 64
+        # 3. Reduce modulo FIELD_PRIME
+        message_hash_int = message_hash_int % FIELD_PRIME
+
+        # 4. Sign with StarkEx
+        r, s = sign(msg_hash=message_hash_int, priv_key=self.private_key_int)
+
+        # 5. Format as hex (64 chars each)
+        r_hex = hex(r)[2:].zfill(64)
+        s_hex = hex(s)[2:].zfill(64)
+
+        # 6. Concatenate
+        signature = r_hex + s_hex
+
+        return signature
 
 
 # ============================================================================
