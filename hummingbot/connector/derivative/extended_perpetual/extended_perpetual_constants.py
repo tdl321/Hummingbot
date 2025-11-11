@@ -10,11 +10,15 @@ TESTNET_DOMAIN = "extended_perpetual_testnet"
 
 # Base URLs
 PERPETUAL_BASE_URL = "https://api.starknet.extended.exchange"
-TESTNET_BASE_URL = "https://api.testnet.extended.exchange"  # Placeholder - verify if testnet exists
+TESTNET_BASE_URL = "https://starknet.sepolia.extended.exchange"
 
-# WebSocket URLs
+# HTTP Streaming URLs (Extended uses HTTP GET streaming, not WebSocket)
+PERPETUAL_STREAM_URL = "http://api.starknet.extended.exchange"
+TESTNET_STREAM_URL = "http://starknet.sepolia.extended.exchange"
+
+# WebSocket URLs (DEPRECATED - Extended uses HTTP streaming instead)
 PERPETUAL_WS_URL = "wss://api.starknet.extended.exchange/stream.extended.exchange/v1"
-TESTNET_WS_URL = "wss://api.testnet.extended.exchange/stream.extended.exchange/v1"
+TESTNET_WS_URL = "wss://starknet.sepolia.extended.exchange/stream.extended.exchange/v1"
 
 # Funding rate update interval (1 hour for Extended)
 # Note: Extended funding payments occur hourly
@@ -32,6 +36,10 @@ CANDLES_URL = "/api/v1/info/candles/{market}/{candleType}"
 FUNDING_RATE_URL = "/api/v1/info/{market}/funding"
 OPEN_INTEREST_URL = "/api/v1/info/{market}/open-interests"
 TICKER_PRICE_CHANGE_URL = "/api/v1/info/markets/{market}/stats"
+
+# HTTP Streaming Endpoints (Server-Sent Events)
+STREAM_ORDERBOOK_URL = "/stream.extended.exchange/v1/orderbooks/{market}"
+STREAM_ACCOUNT_URL = "/stream.extended.exchange/v1/account"
 
 # API Endpoints - Private (Account)
 ACCOUNT_INFO_URL = "/api/v1/user/account/info"
@@ -120,6 +128,12 @@ RATE_LIMITS = [
     RateLimit(limit_id=TRADES_HISTORY_URL, limit=MAX_REQUEST_PER_MINUTE, time_interval=60,
               linked_limits=[LinkedLimitWeightPair(ALL_ENDPOINTS_LIMIT)]),
     RateLimit(limit_id=FUNDING_HISTORY_URL, limit=MAX_REQUEST_PER_MINUTE, time_interval=60,
+              linked_limits=[LinkedLimitWeightPair(ALL_ENDPOINTS_LIMIT)]),
+
+    # Streaming endpoints
+    RateLimit(limit_id=STREAM_ORDERBOOK_URL, limit=MAX_REQUEST_PER_MINUTE, time_interval=60,
+              linked_limits=[LinkedLimitWeightPair(ALL_ENDPOINTS_LIMIT)]),
+    RateLimit(limit_id=STREAM_ACCOUNT_URL, limit=MAX_REQUEST_PER_MINUTE, time_interval=60,
               linked_limits=[LinkedLimitWeightPair(ALL_ENDPOINTS_LIMIT)]),
 ]
 

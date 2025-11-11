@@ -52,9 +52,28 @@ def rest_url(path_url: str, domain: str = "extended_perpetual") -> str:
     return base_url + path_url
 
 
+def stream_url(path_url: str, domain: str = "extended_perpetual") -> str:
+    """
+    Build complete URL for HTTP streaming endpoints.
+
+    Extended uses HTTP GET streaming (Server-Sent Events) instead of WebSocket.
+
+    Args:
+        path_url: Streaming endpoint path (e.g., "/stream.extended.exchange/v1/account")
+        domain: Domain identifier (extended_perpetual or extended_perpetual_testnet)
+
+    Returns:
+        Complete streaming URL string
+    """
+    base_url = CONSTANTS.PERPETUAL_STREAM_URL if domain == "extended_perpetual" else CONSTANTS.TESTNET_STREAM_URL
+    return base_url + path_url
+
+
 def wss_url(domain: str = "extended_perpetual") -> str:
     """
     Get WebSocket URL for the domain.
+
+    DEPRECATED: Extended uses HTTP streaming, not WebSocket.
 
     Args:
         domain: Domain identifier

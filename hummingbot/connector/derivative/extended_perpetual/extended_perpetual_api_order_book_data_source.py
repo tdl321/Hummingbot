@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from collections import defaultdict
 from decimal import Decimal
@@ -10,7 +11,7 @@ from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.funding_info import FundingInfo, FundingInfoUpdate
 from hummingbot.core.data_type.order_book_message import OrderBookMessage, OrderBookMessageType
 from hummingbot.core.data_type.perpetual_api_order_book_data_source import PerpetualAPIOrderBookDataSource
-from hummingbot.core.web_assistant.connections.data_types import WSJSONRequest
+from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTResponse, WSJSONRequest
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 from hummingbot.logger import HummingbotLogger
@@ -72,7 +73,10 @@ class ExtendedPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
         # Get market stats for mark/index prices
         stats_path = CONSTANTS.MARKET_STATS_URL.format(market=market_name)
-        stats_response = await self._connector._api_get(path_url=stats_path)
+        stats_response = await self._connector._api_get(
+            path_url=stats_path,
+            limit_id=CONSTANTS.MARKET_STATS_URL
+        )
 
         # Get latest funding rate
         # Extended: GET /api/v1/info/{market}/funding
@@ -85,7 +89,8 @@ class ExtendedPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
         funding_response = await self._connector._api_get(
             path_url=funding_path,
-            params={"startTime": start_time, "endTime": end_time, "limit": 1}
+            params={"startTime": start_time, "endTime": end_time, "limit": 1},
+            limit_id=CONSTANTS.FUNDING_RATE_URL
         )
 
         # Parse response
@@ -180,7 +185,7 @@ class ExtendedPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
         # Extended: GET /api/v1/info/markets/{market}/orderbook
         path = CONSTANTS.ORDER_BOOK_URL.format(market=market_name)
-        data = await self._connector._api_get(path_url=path)
+        data = await self._connector._api_get(path_url=path, limit_id=CONSTANTS.ORDER_BOOK_URL)
         return data
 
     async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
@@ -211,8 +216,143 @@ class ExtendedPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         )
         return snapshot_msg
 
+    async def _connect_orderbook_stream(self, market: str) -> RESTResponse:
+        """
+        Create HTTP streaming connection for orderbook updates.
+
+        Extended uses HTTP GET streaming (Server-Sent Events) instead of WebSocket.
+
+        Args:
+            market: Market symbol (e.g., "KAITO-USD")
+
+        Returns:
+            RESTResponse with persistent connection for streaming
+        """
+        path_url = CONSTANTS.STREAM_ORDERBOOK_URL.format(market=market)
+        url = web_utils.stream_url(path_url, self._domain)
+
+        rest_assistant = await self._api_factory.get_rest_assistant()
+
+        # Make GET request with streaming support
+        response = await rest_assistant.execute_request_and_get_response(
+            url=url,
+            throttler_limit_id=CONSTANTS.STREAM_ORDERBOOK_URL,
+            method=RESTMethod.GET,
+            headers={"Accept": "text/event-stream"},
+            timeout=None,  # Keep connection open indefinitely
+        )
+        return response
+
+    async def _read_stream_messages(self, response: RESTResponse):
+        """
+        Read Server-Sent Events from HTTP streaming response.
+
+        Yields JSON messages from the SSE stream line-by-line.
+
+        Args:
+            response: RESTResponse with persistent connection
+
+        Yields:
+            Dict[str, Any]: Parsed JSON message from stream
+        """
+        try:
+            # Access underlying aiohttp response to read stream
+            aiohttp_response = response._aiohttp_response
+
+            while True:
+                # Read one line from the stream
+                line = await aiohttp_response.content.readline()
+
+                if not line:
+                    # Connection closed
+                    break
+
+                line = line.decode('utf-8').strip()
+
+                # Skip empty lines and SSE comments
+                if not line or line.startswith(':'):
+                    continue
+
+                # Parse SSE data format: "data: {json}"
+                if line.startswith('data: '):
+                    json_str = line[6:]  # Remove 'data: ' prefix
+                    try:
+                        message = json.loads(json_str)
+                        yield message
+                    except json.JSONDecodeError as e:
+                        self.logger().error(f"Failed to parse SSE message: {line}", exc_info=True)
+                        continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger().error(f"Error reading stream messages: {e}", exc_info=True)
+            raise
+
+    async def listen_for_subscriptions(self):
+        """
+        Listen to orderbook updates via HTTP streaming (Server-Sent Events).
+
+        Overrides base class WebSocket implementation with HTTP streaming.
+        Extended Exchange uses HTTP GET streaming instead of WebSocket.
+        """
+        # Create separate streaming tasks for each trading pair
+        tasks = []
+        for trading_pair in self._trading_pairs:
+            task = asyncio.create_task(self._listen_for_orderbook_stream(trading_pair))
+            tasks.append(task)
+
+        # Wait for all streaming tasks
+        await asyncio.gather(*tasks)
+
+    async def _listen_for_orderbook_stream(self, trading_pair: str):
+        """
+        Listen to orderbook updates for a specific trading pair via HTTP streaming.
+
+        Args:
+            trading_pair: Trading pair to subscribe to (e.g., "KAITO-USD")
+        """
+        while True:
+            stream_response = None
+            try:
+                # Get exchange symbol
+                symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+
+                # Connect to HTTP stream
+                stream_response = await self._connect_orderbook_stream(symbol)
+                self.logger().info(f"Connected to orderbook stream for {trading_pair}")
+
+                # Read and process streaming messages
+                async for message in self._read_stream_messages(stream_response):
+                    # Route message to appropriate queue based on type
+                    channel = self._channel_originating_message(message)
+                    if channel == self._snapshot_messages_queue_key:
+                        await self._parse_order_book_diff_message(message, self._message_queue[channel])
+                    elif channel == self._trade_messages_queue_key:
+                        await self._parse_trade_message(message, self._message_queue[channel])
+
+            except asyncio.CancelledError:
+                raise
+            except ConnectionError as e:
+                self.logger().warning(f"Orderbook stream connection closed for {trading_pair}: {e}")
+            except Exception:
+                self.logger().exception(
+                    f"Unexpected error in orderbook stream for {trading_pair}. Retrying in 5 seconds..."
+                )
+                await self._sleep(5.0)
+            finally:
+                # Close stream connection if open
+                if stream_response is not None:
+                    try:
+                        await stream_response._aiohttp_response.close()
+                    except Exception:
+                        pass
+
     async def _connected_websocket_assistant(self) -> WSAssistant:
-        """Connect to Extended WebSocket."""
+        """
+        DEPRECATED: Extended uses HTTP streaming, not WebSocket.
+
+        This method is kept for compatibility but should not be used.
+        """
         url = f"{web_utils.wss_url(self._domain)}"
         ws: WSAssistant = await self._api_factory.get_ws_assistant()
         await ws.connect(ws_url=url, ping_timeout=CONSTANTS.HEARTBEAT_TIME_INTERVAL)
