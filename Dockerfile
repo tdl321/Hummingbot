@@ -35,7 +35,8 @@ SHELL [ "/bin/bash", "-lc" ]
 RUN echo "conda activate hummingbot" >> ~/.bashrc
 
 COPY setup/pip_packages.txt /tmp/pip_packages.txt
-RUN python3 -m pip install -r /tmp/pip_packages.txt && \
+RUN python3 -m pip install --no-deps eip712-structs && \
+    python3 -m pip install lighter-sdk x10-python-trading fast-stark-crypto && \
     rm /tmp/pip_packages.txt
 
 
