@@ -35,7 +35,7 @@ SHELL [ "/bin/bash", "-lc" ]
 RUN echo "conda activate hummingbot" >> ~/.bashrc
 
 COPY setup/pip_packages.txt /tmp/pip_packages.txt
-RUN python3 -m pip install --no-deps -r /tmp/pip_packages.txt && \
+RUN python3 -m pip install -r /tmp/pip_packages.txt && \
     rm /tmp/pip_packages.txt
 
 
