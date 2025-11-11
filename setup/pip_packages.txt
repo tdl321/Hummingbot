@@ -1,1 +1,4 @@
 eip712-structs
+lighter-sdk
+x10-python-trading
+fast-stark-crypto

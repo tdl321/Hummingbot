@@ -1,6 +1,12 @@
 # Set the base image
 FROM continuumio/miniconda3:latest AS builder
 
+# Ensure UTF-8 locale (C.UTF-8 is already set in base image, but we explicitly set it for clarity)
+# C.UTF-8 is recommended by Python core developers and doesn't require locale files
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONIOENCODING=utf-8
+
 # Install system dependencies
 RUN apt-get update && \
     apt-get install -y sudo libusb-1.0 gcc g++ python3-dev && \
@@ -51,6 +57,12 @@ ARG BUILD_DATE=""
 LABEL branch=${BRANCH}
 LABEL commit=${COMMIT}
 LABEL date=${BUILD_DATE}
+
+# Ensure UTF-8 locale (C.UTF-8 is already set in base image, but we explicitly set it for clarity)
+# C.UTF-8 is recommended by Python core developers and doesn't require locale files
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONIOENCODING=utf-8
 
 # Set ENV variables
 ENV COMMIT_SHA=${COMMIT}
