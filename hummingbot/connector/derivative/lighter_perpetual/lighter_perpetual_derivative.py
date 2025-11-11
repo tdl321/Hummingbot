@@ -445,7 +445,10 @@ class LighterPerpetualDerivative(PerpetualDerivativePyBase):
             return  # Already initialized
 
         # GET /api/v1/orderBooks
-        response = await self._api_get(path_url=CONSTANTS.ORDER_BOOKS_URL)
+        response = await self._api_get(
+            path_url=CONSTANTS.ORDER_BOOKS_URL,
+            limit_id=CONSTANTS.ORDER_BOOKS_URL
+        )
 
         if isinstance(response, dict) and 'order_books' in response:
             order_books = response['order_books']
@@ -570,7 +573,11 @@ class LighterPerpetualDerivative(PerpetualDerivativePyBase):
         # Get recent trades
         # Lighter API: GET /api/v1/trades?market_id={id}&limit=1
         params = {"market_id": market_id, "limit": 1}
-        response = await self._api_get(path_url=CONSTANTS.RECENT_TRADES_URL, params=params)
+        response = await self._api_get(
+            path_url=CONSTANTS.RECENT_TRADES_URL,
+            params=params,
+            limit_id=CONSTANTS.RECENT_TRADES_URL
+        )
 
         if isinstance(response, dict):
             trades = response.get('trades', [])
@@ -691,7 +698,7 @@ class LighterPerpetualDerivative(PerpetualDerivativePyBase):
 
             # Fetch account info by wallet address
             try:
-                accounts_response = await account_api.account(by="address", value=wallet_address)
+                accounts_response = await account_api.account(by="l1_address", value=wallet_address)
 
                 if accounts_response and hasattr(accounts_response, 'accounts'):
                     # Get first account (usually only one per address)
