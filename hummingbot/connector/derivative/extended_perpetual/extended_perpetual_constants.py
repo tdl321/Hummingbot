@@ -6,20 +6,15 @@ BROKER_ID = "HBOT"
 MAX_ORDER_ID_LEN = 32
 
 DOMAIN = EXCHANGE_NAME
-TESTNET_DOMAIN = "extended_perpetual_testnet"
 
-# Base URLs
+# Base URLs - MAINNET ONLY
 PERPETUAL_BASE_URL = "https://api.starknet.extended.exchange"
-TESTNET_BASE_URL = "https://starknet.sepolia.extended.exchange"
 
 # HTTP Streaming URLs (Extended uses HTTPS GET streaming, not WebSocket)
-# Public streams use stream.extended.exchange domain
 PERPETUAL_STREAM_URL = "https://stream.extended.exchange"
-TESTNET_STREAM_URL = "https://stream.extended.exchange"  # Testnet may use different subdomain
 
 # WebSocket URLs (DEPRECATED - Extended uses HTTP streaming instead)
 PERPETUAL_WS_URL = "wss://api.starknet.extended.exchange/stream.extended.exchange/v1"
-TESTNET_WS_URL = "wss://starknet.sepolia.extended.exchange/stream.extended.exchange/v1"
 
 # Funding rate update interval (30 seconds for Extended)
 # Note: Extended funding payments occur every 8 hours, but we poll rates every 30s for faster arbitrage detection

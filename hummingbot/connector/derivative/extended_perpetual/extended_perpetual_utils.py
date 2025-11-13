@@ -44,32 +44,9 @@ class ExtendedPerpetualConfigMap(BaseConnectorConfigMap):
 
 KEYS = ExtendedPerpetualConfigMap.model_construct()
 
-OTHER_DOMAINS = ["extended_perpetual_testnet"]
-OTHER_DOMAINS_PARAMETER = {"extended_perpetual_testnet": "extended_perpetual_testnet"}
-OTHER_DOMAINS_EXAMPLE_PAIR = {"extended_perpetual_testnet": "KAITO-USD"}
-OTHER_DOMAINS_DEFAULT_FEES = {"extended_perpetual_testnet": [0.0002, 0.0005]}
+OTHER_DOMAINS = []
+OTHER_DOMAINS_PARAMETER = {}
+OTHER_DOMAINS_EXAMPLE_PAIR = {}
+OTHER_DOMAINS_DEFAULT_FEES = {}
 
-
-class ExtendedPerpetualTestnetConfigMap(BaseConnectorConfigMap):
-    connector: str = "extended_perpetual_testnet"
-    extended_perpetual_testnet_api_key: SecretStr = Field(
-        default=...,
-        json_schema_extra={
-            "prompt": "Enter your Extended testnet API key",
-            "is_secure": True,
-            "is_connect_key": True,
-            "prompt_on_new": True,
-        }
-    )
-    extended_perpetual_testnet_api_secret: SecretStr = Field(
-        default=...,
-        json_schema_extra={
-            "prompt": "Enter your Extended testnet API secret (Stark private key)",
-            "is_secure": True,
-            "is_connect_key": True,
-            "prompt_on_new": True,
-        }
-    )
-
-
-OTHER_DOMAINS_KEYS = {"extended_perpetual_testnet": ExtendedPerpetualTestnetConfigMap.model_construct()}
+OTHER_DOMAINS_KEYS = {}

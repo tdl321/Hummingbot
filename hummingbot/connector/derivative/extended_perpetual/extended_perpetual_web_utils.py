@@ -43,12 +43,12 @@ def rest_url(path_url: str, domain: str = "extended_perpetual") -> str:
 
     Args:
         path_url: API endpoint path (e.g., "/api/v1/info/markets")
-        domain: Domain identifier (extended_perpetual or extended_perpetual_testnet)
+        domain: Domain identifier (mainnet only)
 
     Returns:
         Complete URL string
     """
-    base_url = CONSTANTS.PERPETUAL_BASE_URL if domain == "extended_perpetual" else CONSTANTS.TESTNET_BASE_URL
+    base_url = CONSTANTS.PERPETUAL_BASE_URL
     return base_url + path_url
 
 
@@ -60,12 +60,12 @@ def stream_url(path_url: str, domain: str = "extended_perpetual") -> str:
 
     Args:
         path_url: Streaming endpoint path (e.g., "/stream.extended.exchange/v1/account")
-        domain: Domain identifier (extended_perpetual or extended_perpetual_testnet)
+        domain: Domain identifier (mainnet only)
 
     Returns:
         Complete streaming URL string
     """
-    base_url = CONSTANTS.PERPETUAL_STREAM_URL if domain == "extended_perpetual" else CONSTANTS.TESTNET_STREAM_URL
+    base_url = CONSTANTS.PERPETUAL_STREAM_URL
     return base_url + path_url
 
 
@@ -76,12 +76,12 @@ def wss_url(domain: str = "extended_perpetual") -> str:
     DEPRECATED: Extended uses HTTP streaming, not WebSocket.
 
     Args:
-        domain: Domain identifier
+        domain: Domain identifier (mainnet only)
 
     Returns:
         WebSocket URL string
     """
-    base_ws_url = CONSTANTS.PERPETUAL_WS_URL if domain == "extended_perpetual" else CONSTANTS.TESTNET_WS_URL
+    base_ws_url = CONSTANTS.PERPETUAL_WS_URL
     return base_ws_url
 
 
