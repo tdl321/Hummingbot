@@ -105,7 +105,13 @@ class ParadexPerpetualDerivative(PerpetualDerivativePyBase):
     @property
     def authenticator(self) -> Optional[ParadexPerpetualAuth]:
         """Get authenticator instance."""
-        return self._auth
+        if self._trading_required and self.paradex_perpetual_api_secret and self.paradex_perpetual_account_address:
+            return ParadexPerpetualAuth(
+                api_secret=self.paradex_perpetual_api_secret,
+                account_address=self.paradex_perpetual_account_address,
+                domain=self._domain
+            )
+        return None
 
     @property
     def rate_limits_rules(self) -> List[RateLimit]:

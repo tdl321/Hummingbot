@@ -32,7 +32,7 @@ class ParadexPerpetualConfigMap(BaseConnectorConfigMap):
     paradex_perpetual_api_secret: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": "Enter your Paradex subkey private key (Starknet L2 private key, 0x...)",
+            "prompt": "Enter your Paradex API key (JWT token) or L2 private key (0x...)",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True,
@@ -41,7 +41,7 @@ class ParadexPerpetualConfigMap(BaseConnectorConfigMap):
     paradex_perpetual_account_address: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": "Enter your Paradex main account address (0x...)",
+            "prompt": "Enter your Paradex L1 account address (Ethereum L1 address, 0x...)",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True,
@@ -66,7 +66,7 @@ class ParadexPerpetualTestnetConfigMap(BaseConnectorConfigMap):
     paradex_perpetual_testnet_api_secret: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": "Enter your Paradex testnet subkey private key (Starknet L2 private key, 0x...)",
+            "prompt": "Enter your Paradex testnet API key (JWT token) or L2 private key (0x...)",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True,
@@ -75,7 +75,7 @@ class ParadexPerpetualTestnetConfigMap(BaseConnectorConfigMap):
     paradex_perpetual_testnet_account_address: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": "Enter your Paradex testnet main account address (0x...)",
+            "prompt": "Enter your Paradex testnet L1 account address (Ethereum L1 address, 0x...)",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True,
