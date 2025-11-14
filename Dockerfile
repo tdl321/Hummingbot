@@ -42,7 +42,6 @@ RUN python3 -m pip install --no-deps eip712-structs && \
     python3 -m pip install --no-deps x10-python-trading && \
     python3 -m pip install --no-deps fast-stark-crypto && \
     python3 -m pip install --no-deps cairo-lang && \
-    python3 -m pip install --no-deps paradex-py && \
     python3 -m pip install --no-deps lighter-sdk && \
     rm /tmp/pip_packages.txt
 

@@ -49,6 +49,7 @@ def main():
     }
     install_requires = [
         "aiohttp>=3.8.5",
+        "aiohttp-retry>=2.8.3",
         "asyncssh>=2.13.2",
         "aioprocessing>=2.0.1",
         "aioresponses>=0.7.4",
@@ -62,6 +63,7 @@ def main():
         "cryptography>=41.0.2",
         "eth-account>=0.13.0",
         "injective-py",
+        "mpmath>=1.3.0",
         "msgpack-python",
         "numpy>=1.25.0,<2",
         "objgraph",
@@ -81,6 +83,7 @@ def main():
         "scipy>=1.11.1",
         "six>=1.16.0",
         "sqlalchemy>=1.4.49",
+        "sympy>=1.11",
         "tabulate>=0.9.0",
         "ujson>=5.7.0",
         "urllib3>=1.26.15,<2.0",
