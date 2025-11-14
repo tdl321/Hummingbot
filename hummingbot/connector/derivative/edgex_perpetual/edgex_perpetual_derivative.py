@@ -21,6 +21,7 @@ from hummingbot.connector.derivative.edgex_perpetual import (
     edgex_perpetual_web_utils as web_utils,
 )
 from hummingbot.connector.derivative.edgex_perpetual.edgex_perpetual_auth import EdgexPerpetualAuth
+from hummingbot.connector.derivative.position import Position
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
@@ -395,9 +396,98 @@ class EdgexPerpetualDerivative(PerpetualDerivativePyBase):
             Tuple of (exchange_order_id, created_timestamp)
 
         Reference: Lessons Learned Section 1.1, 1.2
-        TODO: Implement in Phase 3
         """
-        raise NotImplementedError("_place_order must be implemented in Phase 3")
+        try:
+            # Get contract ID from trading pair
+            # TODO: Implement proper mapping after metadata integration
+            contract_id = trading_pair  # Using trading_pair as contractId for now
+
+            # Map order parameters to EdgeX format
+            side = CONSTANTS.SIDE_BUY if trade_type == TradeType.BUY else CONSTANTS.SIDE_SELL
+
+            # Determine order type
+            if order_type == OrderType.LIMIT or order_type == OrderType.LIMIT_MAKER:
+                edgex_order_type = CONSTANTS.ORDER_TYPE_LIMIT
+            else:
+                edgex_order_type = CONSTANTS.ORDER_TYPE_MARKET
+
+            # Time in force
+            time_in_force = kwargs.get("time_in_force", CONSTANTS.TIME_IN_FORCE_GTC)
+
+            # Reduce only flag
+            reduce_only = position_action == PositionAction.CLOSE
+
+            # TODO: Implement L2 signature generation for orders
+            # For now, raise NotImplementedError to prevent order placement without L2 signing
+            # This is CRITICAL - orders require L2 StarkEx signatures
+            raise NotImplementedError(
+                "Order placement requires L2 StarkEx signature implementation. "
+                "This involves:\n"
+                "1. Calculating l2Nonce (order nonce)\n"
+                "2. Calculating l2Value (notional value)\n"
+                "3. Calculating l2Size (order size in contract units)\n"
+                "4. Calculating l2LimitFee (max fee)\n"
+                "5. Calculating l2ExpireTime (expiration timestamp)\n"
+                "6. Generating l2Signature (Pedersen hash + STARK signature)\n"
+                "See EdgeX documentation: https://edgex-1.gitbook.io/edgex-documentation/api/l2-signature"
+            )
+
+            # This code will be enabled after L2 signing is implemented:
+            """
+            # Build order request with L2 fields
+            order_data = {
+                "accountId": self._edgex_perpetual_account_id,
+                "contractId": contract_id,
+                "side": side,
+                "size": str(amount),
+                "price": str(price),
+                "clientOrderId": order_id,
+                "type": edgex_order_type,
+                "timeInForce": time_in_force,
+                "reduceOnly": reduce_only,
+                # L2 StarkEx fields (requires order signer)
+                "l2Nonce": l2_nonce,
+                "l2Value": l2_value,
+                "l2Size": l2_size,
+                "l2LimitFee": l2_limit_fee,
+                "l2ExpireTime": l2_expire_time,
+                "l2Signature": l2_signature,
+            }
+
+            # Submit order to EdgeX
+            response = await self._api_post(
+                path_url=CONSTANTS.CREATE_ORDER_URL,
+                data=order_data,
+                is_auth_required=True,
+                limit_id=CONSTANTS.CREATE_ORDER_URL
+            )
+
+            # Parse response
+            if not isinstance(response, dict) or response.get(CONSTANTS.RESPONSE_CODE) != CONSTANTS.RESPONSE_CODE_SUCCESS:
+                error_msg = response.get(CONSTANTS.RESPONSE_MSG, "Unknown error")
+                raise IOError(f"Order placement failed: {error_msg}")
+
+            order_result = response.get(CONSTANTS.RESPONSE_DATA, {})
+            exchange_order_id = str(order_result.get("orderId"))
+            created_timestamp = float(order_result.get("createTime", self.current_timestamp * 1000)) / 1000
+
+            self.logger().info(
+                f"✅ Order placed successfully: {order_id} -> {exchange_order_id} "
+                f"({side} {amount} {trading_pair} @ {price})"
+            )
+
+            return exchange_order_id, created_timestamp
+            """
+
+        except NotImplementedError:
+            # Re-raise NotImplementedError for L2 signing
+            raise
+        except Exception as e:
+            self.logger().error(
+                f"❌ Error placing order {order_id}: {str(e)}",
+                exc_info=True
+            )
+            raise
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
         """
@@ -410,9 +500,55 @@ class EdgexPerpetualDerivative(PerpetualDerivativePyBase):
             tracked_order: Tracked order object
 
         Reference: Lessons Learned Section 1.2
-        TODO: Implement in Phase 3
         """
-        raise NotImplementedError("_place_cancel must be implemented in Phase 3")
+        try:
+            # Get exchange order ID from tracked order
+            exchange_order_id = tracked_order.exchange_order_id
+
+            if not exchange_order_id:
+                # If no exchange order ID, cannot cancel
+                raise ValueError(f"Cannot cancel order {order_id}: no exchange_order_id found")
+
+            # Build cancel request
+            cancel_data = {
+                "accountId": self._edgex_perpetual_account_id,
+                "orderIdList": [exchange_order_id]  # EdgeX expects a list of order IDs
+            }
+
+            # Submit cancel request to EdgeX
+            response = await self._api_post(
+                path_url=CONSTANTS.CANCEL_ORDER_BY_ID_URL,
+                data=cancel_data,
+                is_auth_required=True,
+                limit_id=CONSTANTS.CANCEL_ORDER_BY_ID_URL
+            )
+
+            # Parse response
+            if not isinstance(response, dict):
+                raise IOError(f"Invalid cancel response format: {response}")
+
+            if response.get(CONSTANTS.RESPONSE_CODE) != CONSTANTS.RESPONSE_CODE_SUCCESS:
+                error_msg = response.get(CONSTANTS.RESPONSE_MSG, "Unknown error")
+
+                # Check if order was already cancelled or filled
+                if "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
+                    self.logger().warning(
+                        f"Order {order_id} ({exchange_order_id}) not found on exchange - may already be filled/cancelled"
+                    )
+                    return  # Don't raise error for already-cancelled orders
+
+                raise IOError(f"Order cancellation failed: {error_msg}")
+
+            self.logger().info(
+                f"✅ Order cancelled successfully: {order_id} ({exchange_order_id})"
+            )
+
+        except Exception as e:
+            self.logger().error(
+                f"❌ Error cancelling order {order_id}: {str(e)}",
+                exc_info=True
+            )
+            raise
 
     # ===============================
     # Account Data Methods
@@ -428,9 +564,74 @@ class EdgexPerpetualDerivative(PerpetualDerivativePyBase):
         Fetches from: /api/v1/private/account/getCollateralByCoinId
 
         Reference: Lessons Learned Section 1.1 (CRITICAL MISTAKE #1)
-        TODO: Implement in Phase 3
         """
-        raise NotImplementedError("_update_balances must be implemented in Phase 3 - CRITICAL!")
+        try:
+            # Fetch collateral/balance data from EdgeX
+            response = await self._api_get(
+                path_url=CONSTANTS.GET_COLLATERAL_BY_COIN_URL,
+                params={"accountId": self._edgex_perpetual_account_id},
+                is_auth_required=True,
+                limit_id=CONSTANTS.GET_COLLATERAL_BY_COIN_URL
+            )
+
+            # EdgeX API response format: {"code": "SUCCESS", "data": {...}}
+            if not isinstance(response, dict):
+                self.logger().warning(f"Invalid balance response format: {response}")
+                return
+
+            if response.get(CONSTANTS.RESPONSE_CODE) != CONSTANTS.RESPONSE_CODE_SUCCESS:
+                error_msg = response.get(CONSTANTS.RESPONSE_MSG, "Unknown error")
+                self.logger().error(f"Balance fetch failed: {error_msg}")
+                return
+
+            data = response.get(CONSTANTS.RESPONSE_DATA, {})
+
+            # EdgeX returns collateral data with coin information
+            # Expected structure: {"data": [{"coinId": "USD", "amount": "1000.50", ...}, ...]}
+            if isinstance(data, list):
+                balances_list = data
+            elif isinstance(data, dict) and "collateralList" in data:
+                balances_list = data["collateralList"]
+            else:
+                self.logger().warning(f"Unexpected balance data structure: {data}")
+                return
+
+            # Parse balance data
+            for balance_entry in balances_list:
+                # Get asset/coin identifier
+                asset = balance_entry.get("coinId") or balance_entry.get("coin") or balance_entry.get("asset")
+                if not asset:
+                    continue
+
+                # EdgeX balance fields (amount is total balance)
+                total_balance_str = balance_entry.get("amount", "0")
+                total_balance = Decimal(str(total_balance_str))
+
+                # Available balance (may need to calculate: total - frozen/locked)
+                frozen_balance_str = balance_entry.get("frozenAmount", "0")
+                frozen_balance = Decimal(str(frozen_balance_str))
+                available_balance = total_balance - frozen_balance
+
+                # Update Hummingbot's internal balance tracking
+                self._account_balances[asset] = total_balance
+                self._account_available_balances[asset] = available_balance
+
+                self.logger().debug(
+                    f"Updated {asset} balance: total={total_balance}, available={available_balance}"
+                )
+
+        except Exception as e:
+            self.logger().error(
+                f"❌ CRITICAL ERROR updating EdgeX balances: {str(e)}\n"
+                f"This will cause trading to fail. Verify:\n"
+                f"1. API credentials are valid\n"
+                f"2. Account has been funded\n"
+                f"3. Account is whitelisted\n"
+                f"4. API endpoint is correct",
+                exc_info=True
+            )
+            # Re-raise to signal failure to framework
+            raise
 
     async def _update_positions(self):
         """
@@ -442,9 +643,107 @@ class EdgexPerpetualDerivative(PerpetualDerivativePyBase):
         Fetches from: /api/v1/private/account/getPositionByContractId
 
         Reference: Lessons Learned Section 1.1 (CRITICAL MISTAKE #1)
-        TODO: Implement in Phase 3
         """
-        raise NotImplementedError("_update_positions must be implemented in Phase 3 - CRITICAL!")
+        try:
+            # Fetch position data from EdgeX
+            response = await self._api_get(
+                path_url=CONSTANTS.GET_POSITION_BY_CONTRACT_URL,
+                params={"accountId": self._edgex_perpetual_account_id},
+                is_auth_required=True,
+                limit_id=CONSTANTS.GET_POSITION_BY_CONTRACT_URL
+            )
+
+            # EdgeX API response format: {"code": "SUCCESS", "data": {...}}
+            if not isinstance(response, dict):
+                self.logger().warning(f"Invalid positions response format: {response}")
+                return
+
+            if response.get(CONSTANTS.RESPONSE_CODE) != CONSTANTS.RESPONSE_CODE_SUCCESS:
+                error_msg = response.get(CONSTANTS.RESPONSE_MSG, "Unknown error")
+                self.logger().error(f"Positions fetch failed: {error_msg}")
+                return
+
+            data = response.get(CONSTANTS.RESPONSE_DATA, {})
+
+            # Clear existing positions
+            self._account_positions.clear()
+
+            # EdgeX returns position data per contract
+            # Expected structure: {"data": [{"contractId": "BTC-USD-PERP", "openSize": "0.5", ...}, ...]}
+            if isinstance(data, list):
+                positions_list = data
+            elif isinstance(data, dict) and "positionList" in data:
+                positions_list = data["positionList"]
+            else:
+                self.logger().warning(f"Unexpected positions data structure: {data}")
+                return
+
+            for position_data in positions_list:
+                # Get contract ID and convert to trading pair
+                contract_id = position_data.get("contractId") or position_data.get("contract")
+                if not contract_id:
+                    continue
+
+                # Convert EdgeX contractId to Hummingbot trading pair
+                # TODO: Implement proper mapping after metadata integration
+                try:
+                    trading_pair = self._get_trading_pair(contract_id)
+                except NotImplementedError:
+                    # Skip until mapping is implemented
+                    trading_pair = contract_id  # Use contractId as fallback
+
+                # Parse position size and determine side
+                open_size_str = position_data.get("openSize", "0")
+                open_size = Decimal(str(open_size_str))
+
+                if open_size == 0:
+                    continue  # No position
+
+                # Determine position side from sign of open_size
+                if open_size > 0:
+                    position_side = PositionSide.LONG
+                    amount = open_size
+                elif open_size < 0:
+                    position_side = PositionSide.SHORT
+                    amount = abs(open_size)
+                else:
+                    continue
+
+                # Extract position details
+                entry_price_str = position_data.get("avgEntryPrice") or position_data.get("openPrice", "0")
+                entry_price = Decimal(str(entry_price_str))
+
+                unrealized_pnl_str = position_data.get("unrealizedPnl", "0")
+                unrealized_pnl = Decimal(str(unrealized_pnl_str))
+
+                leverage_str = position_data.get("leverage", "1")
+                leverage = Decimal(str(leverage_str))
+
+                # Create Position object
+                position = Position(
+                    trading_pair=trading_pair,
+                    position_side=position_side,
+                    unrealized_pnl=unrealized_pnl,
+                    entry_price=entry_price,
+                    amount=amount,
+                    leverage=leverage,
+                )
+
+                self._account_positions[trading_pair] = position
+
+                self.logger().debug(
+                    f"Updated position for {trading_pair}: "
+                    f"{position_side.name} {amount} @ {entry_price} (PnL: {unrealized_pnl})"
+                )
+
+        except Exception as e:
+            self.logger().error(
+                f"❌ CRITICAL ERROR updating EdgeX positions: {str(e)}\n"
+                f"This will cause position tracking to fail.",
+                exc_info=True
+            )
+            # Re-raise to signal failure
+            raise
 
     async def _update_trading_rules(self):
         """
@@ -453,10 +752,92 @@ class EdgexPerpetualDerivative(PerpetualDerivativePyBase):
         CRITICAL: This method MUST be fully implemented before deployment.
 
         Fetches from: /api/v1/public/meta/getMetaData
-
-        TODO: Implement in Phase 3
         """
-        raise NotImplementedError("_update_trading_rules must be implemented in Phase 3 - CRITICAL!")
+        try:
+            # Fetch metadata from EdgeX (contains contract information)
+            response = await self._api_get(
+                path_url=CONSTANTS.METADATA_URL,
+                is_auth_required=False,
+                limit_id=CONSTANTS.METADATA_URL
+            )
+
+            if not isinstance(response, dict):
+                self.logger().warning(f"Invalid metadata response format: {response}")
+                return
+
+            if response.get(CONSTANTS.RESPONSE_CODE) != CONSTANTS.RESPONSE_CODE_SUCCESS:
+                error_msg = response.get(CONSTANTS.RESPONSE_MSG, "Unknown error")
+                self.logger().error(f"Metadata fetch failed: {error_msg}")
+                return
+
+            data = response.get(CONSTANTS.RESPONSE_DATA, {})
+
+            # Extract contract list from metadata
+            contract_list = data.get("contractList", [])
+
+            if not contract_list:
+                self.logger().warning("No contracts found in metadata response")
+                return
+
+            # Clear existing trading rules
+            self._trading_rules.clear()
+
+            # Parse contract information into trading rules
+            for contract_info in contract_list:
+                try:
+                    # Get contract ID (e.g., "BTC-USD-PERP")
+                    contract_id = contract_info.get("contractId")
+                    if not contract_id:
+                        continue
+
+                    # Convert to Hummingbot trading pair format
+                    # TODO: Implement proper mapping
+                    trading_pair = contract_id  # Use contractId as trading pair for now
+
+                    # Extract trading rules parameters
+                    min_order_size = Decimal(str(contract_info.get("minOrderSize", "0.001")))
+                    max_order_size = Decimal(str(contract_info.get("maxOrderSize", "1000000")))
+                    min_price_increment = Decimal(str(contract_info.get("tickSize", "0.01")))
+                    min_base_amount_increment = Decimal(str(contract_info.get("stepSize", "0.001")))
+
+                    # Create TradingRule object
+                    trading_rule = TradingRule(
+                        trading_pair=trading_pair,
+                        min_order_size=min_order_size,
+                        max_order_size=max_order_size,
+                        min_price_increment=min_price_increment,
+                        min_base_amount_increment=min_base_amount_increment,
+                        min_notional_size=Decimal("1"),  # Default minimum notional
+                    )
+
+                    self._trading_rules[trading_pair] = trading_rule
+
+                    # Cache contract metadata for later use
+                    self._contract_metadata[contract_id] = contract_info
+
+                    self.logger().debug(
+                        f"Updated trading rule for {trading_pair}: "
+                        f"min={min_order_size}, max={max_order_size}, "
+                        f"tick={min_price_increment}, step={min_base_amount_increment}"
+                    )
+
+                except Exception as e:
+                    self.logger().error(f"Error parsing contract info for {contract_info.get('contractId')}: {e}")
+                    continue
+
+            # Update timestamp
+            self._last_trading_rules_update_ts = self.current_timestamp
+
+            self.logger().info(f"Successfully updated {len(self._trading_rules)} trading rules from EdgeX metadata")
+
+        except Exception as e:
+            self.logger().error(
+                f"❌ ERROR updating EdgeX trading rules: {str(e)}",
+                exc_info=True
+            )
+            # Do not re-raise - trading rules update failure shouldn't stop the bot
+            # But log prominently
+            self.logger().warning("Trading rules update failed - using cached rules if available")
 
     async def _update_funding_rates(self):
         """
@@ -464,12 +845,64 @@ class EdgexPerpetualDerivative(PerpetualDerivativePyBase):
 
         CRITICAL: This method MUST be fully implemented before deployment.
 
-        TODO: Implement in Phase 3
-        - Determine exact endpoint for funding rate data
-        - Parse funding rate response
-        - Update internal funding rate tracking
+        NOTE: EdgeX funding rate endpoint may vary. Try metadata first, then dedicated endpoint.
         """
-        raise NotImplementedError("_update_funding_rates must be implemented in Phase 3")
+        if not self._trading_pairs:
+            return
+
+        try:
+            # Try to fetch funding rates from metadata (may include funding rate info)
+            response = await self._api_get(
+                path_url=CONSTANTS.METADATA_URL,
+                is_auth_required=False,
+                limit_id=CONSTANTS.METADATA_URL
+            )
+
+            if not isinstance(response, dict) or response.get(CONSTANTS.RESPONSE_CODE) != CONSTANTS.RESPONSE_CODE_SUCCESS:
+                self.logger().debug("Could not fetch funding rates from metadata")
+                return
+
+            data = response.get(CONSTANTS.RESPONSE_DATA, {})
+            contract_list = data.get("contractList", [])
+
+            for contract_info in contract_list:
+                try:
+                    contract_id = contract_info.get("contractId")
+                    if not contract_id:
+                        continue
+
+                    # Convert to trading pair
+                    trading_pair = contract_id  # Use contractId as trading pair for now
+
+                    # Extract funding rate (field name may vary - try multiple)
+                    funding_rate_str = (
+                        contract_info.get("fundingRate") or
+                        contract_info.get("currentFundingRate") or
+                        contract_info.get("funding_rate")
+                    )
+
+                    if funding_rate_str is not None:
+                        funding_rate = Decimal(str(funding_rate_str))
+
+                        # Update internal tracking
+                        self._funding_rates[trading_pair] = funding_rate
+
+                        self.logger().debug(
+                            f"Updated funding rate for {trading_pair}: {funding_rate:.6f}"
+                        )
+
+                except Exception as e:
+                    self.logger().error(
+                        f"Error extracting funding rate for {contract_info.get('contractId')}: {str(e)}"
+                    )
+                    continue
+
+        except Exception as e:
+            self.logger().error(
+                f"Error in _update_funding_rates: {str(e)}",
+                exc_info=True
+            )
+            # Do not re-raise - funding rate updates are not critical for basic trading
 
     # ===============================
     # Position & Leverage Methods

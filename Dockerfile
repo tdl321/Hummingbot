@@ -38,7 +38,6 @@ RUN echo "conda activate hummingbot" >> ~/.bashrc
 
 COPY setup/pip_packages.txt /tmp/pip_packages.txt
 RUN python3 -m pip install --no-deps eip712-structs && \
-    python3 -m pip install eth-account==0.11.2 && \
     python3 -m pip install --no-deps x10-python-trading && \
     python3 -m pip install --no-deps fast-stark-crypto && \
     python3 -m pip install --no-deps cairo-lang && \
