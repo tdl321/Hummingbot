@@ -225,3 +225,30 @@ cat conf/connectors/extended_perpetual.yml | grep api
 **Total time: 2-3 minutes**
 
 No need to debug L1 auth, wallet registration, or SDK issues. Just get fresh keys and move on! 🎉
+
+## ❓ Troubleshooting 401 Unauthorized Errors
+
+If you are still getting `401 Unauthorized` errors even with fresh API keys, it might be due to copy-paste issues or format problems.
+
+### 1. Check for Whitespace
+Ensure there are no leading or trailing spaces in your API key or secret in the config file.
+
+**Correct:**
+```yaml
+extended_perpetual_api_key: x10-abc...
+extended_perpetual_api_secret: 0x123...
+```
+
+**Incorrect (spaces):**
+```yaml
+extended_perpetual_api_key: " x10-abc... "
+```
+
+### 2. Verify Private Key Format
+The API secret (Stark private key) must be a hex string. It can optionally start with `0x`.
+- Length: Typically 64 hex characters (or 66 with `0x`).
+- Characters: 0-9, a-f, A-F.
+
+### 3. Double Check Vault ID
+Ensure the Vault ID matches the one associated with your API key in the Extended dashboard.
+```

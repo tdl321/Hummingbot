@@ -30,16 +30,17 @@ class ExtendedPerpetualAuth(AuthBase):
             api_secret: Stark private key (hex string) for signing transactions
             vault_id: Vault/account identifier on Extended (optional, can be fetched from API)
         """
-        self._api_key: str = api_key
-        self._api_secret: str = api_secret  # Stark private key as hex string
+        self._api_key: str = api_key.strip() if api_key else api_key
+        # Stark private key as hex string - normalize by stripping whitespace
+        self._api_secret: str = api_secret.strip() if api_secret and isinstance(api_secret, str) else api_secret
         self._vault_id: Optional[str] = vault_id
 
         # Derive public key from private key
         try:
             # Convert hex private key to integer
             # Handle both '0x' prefixed and unprefixed hex strings
-            if isinstance(api_secret, str):
-                clean_secret = api_secret[2:] if api_secret.startswith('0x') else api_secret
+            if isinstance(self._api_secret, str):
+                clean_secret = self._api_secret[2:] if self._api_secret.startswith('0x') else self._api_secret
                 private_key_int = int(clean_secret, 16)
             else:
                 raise ValueError("API secret must be a hex string")
