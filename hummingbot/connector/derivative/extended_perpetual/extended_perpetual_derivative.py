@@ -43,6 +43,7 @@ from hummingbot.core.data_type.user_stream_tracker_data_source import UserStream
 from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 from hummingbot.core.utils.estimate_fee import build_trade_fee
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
+from pydantic import SecretStr
 
 bpm_logger = None
 
@@ -81,8 +82,17 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
             trading_required: Whether trading is required (False for read-only)
             domain: Domain identifier (extended_perpetual or testnet)
         """
-        self.extended_perpetual_api_key = extended_perpetual_api_key
-        self.extended_perpetual_api_secret = extended_perpetual_api_secret
+        # Unwrap SecretStr objects if needed (config provides SecretStr, tests provide plain str)
+        self.extended_perpetual_api_key = (
+            extended_perpetual_api_key.get_secret_value()
+            if isinstance(extended_perpetual_api_key, SecretStr)
+            else extended_perpetual_api_key
+        )
+        self.extended_perpetual_api_secret = (
+            extended_perpetual_api_secret.get_secret_value()
+            if isinstance(extended_perpetual_api_secret, SecretStr)
+            else extended_perpetual_api_secret
+        )
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
         self._domain = domain
