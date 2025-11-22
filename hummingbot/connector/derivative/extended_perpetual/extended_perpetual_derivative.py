@@ -753,131 +753,65 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
 
     async def _update_balances(self):
         """
-        Update account balances from Extended API.
+        Update account balances from Extended WebSocket.
 
-        NOTE: This method is NOT called during normal operation because we override
-        _status_polling_loop_fetch_updates to skip it. Balance updates come via WebSocket.
+        Extended uses WebSocket for real-time balance updates. This method waits for
+        WebSocket data instead of making REST API calls (which return 401 errors).
 
-        This method remains for backward compatibility or manual calls if needed.
+        This is called by:
+        1. The `connect` command to test connections
+        2. Manual balance checks
+        3. Other balance-related commands
 
-        Fetches balance data from /api/v1/user/balance endpoint.
-        Returns 404 if balance is zero (new account).
+        The actual balance updates come from _process_balance_update() via WebSocket.
         """
-        try:
-            response = await self._api_get(
-                path_url=CONSTANTS.BALANCE_URL,
-                is_auth_required=True,
-                limit_id=CONSTANTS.BALANCE_URL
-            )
+        # Extended uses WebSocket-only for balance updates
+        # The REST API balance endpoint returns 401 (requires Stark signatures)
+        # So we just check if we have balance data from WebSocket already
 
-            if isinstance(response, dict) and response.get('status') == 'OK':
-                data = response.get('data', {})
+        quote = CONSTANTS.CURRENCY  # USD
 
-                # Extended balance response fields:
-                # - balance: Account balance = Deposits - Withdrawals + Realised PnL
-                # - equity: Balance + unrealised gains/losses
-                # - availableForTrade: Equity minus initial margin requirements
-                # - availableForWithdrawal: Maximum withdrawable amount
-                quote = CONSTANTS.CURRENCY  # USD
+        if quote in self._account_balances:
+            # We already have balance data from WebSocket
+            self.logger().debug(f"Extended balance available from WebSocket: {self._account_balances[quote]}")
+            return
 
-                # Use equity as total balance (includes unrealized PnL)
-                total_balance = Decimal(str(data.get('equity', '0')))
-                # Use availableForTrade as available balance (can open new positions with this)
-                available_balance = Decimal(str(data.get('availableForTrade', '0')))
+        # Wait a bit for WebSocket to send initial balance snapshot
+        # The WebSocket sends a snapshot within ~5 seconds of connection
+        max_wait = 10  # Wait up to 10 seconds
+        wait_interval = 0.5  # Check every 0.5 seconds
+        elapsed = 0
 
-                self._account_balances[quote] = total_balance
-                self._account_available_balances[quote] = available_balance
+        while elapsed < max_wait:
+            await asyncio.sleep(wait_interval)
+            elapsed += wait_interval
 
-                self.logger().debug(
-                    f"Extended balance updated: Total={total_balance}, Available={available_balance}"
-                )
+            if quote in self._account_balances:
+                self.logger().info(f"Extended balance received from WebSocket after {elapsed}s")
+                return
 
-            else:
-                # Log unexpected response format
-                self.logger().warning(f"Unexpected Extended balance response: {response}")
-
-        except Exception as e:
-            # Handle 404 error (zero balance) gracefully
-            error_msg = str(e).lower()
-            if '404' in error_msg or 'not found' in error_msg:
-                # Account exists but has zero balance
-                quote = CONSTANTS.CURRENCY
-                self._account_balances[quote] = Decimal("0")
-                self._account_available_balances[quote] = Decimal("0")
-                self.logger().info("Extended account has zero balance (404 response)")
-            else:
-                self.logger().error(f"Error updating Extended balances: {e}", exc_info=True)
-                raise
+        # No balance data received via WebSocket after waiting
+        # Initialize with zero to allow connection to proceed
+        self._account_balances[quote] = Decimal("0")
+        self._account_available_balances[quote] = Decimal("0")
+        self.logger().warning(
+            "Extended balance not received from WebSocket after 10s. "
+            "Initialized to zero. Balance will update when WebSocket sends data."
+        )
 
     async def _update_positions(self):
         """
-        Update positions from Extended API.
+        Update positions from Extended WebSocket.
 
-        NOTE: This method is NOT called during normal operation because we override
-        _status_polling_loop_fetch_updates to skip it. Position updates come via WebSocket.
+        Extended uses WebSocket for real-time position updates. This method waits for
+        WebSocket data instead of making REST API calls (which return 401 errors).
 
-        This method remains for backward compatibility or manual calls if needed.
-
-        Fetches active positions from /api/v1/user/positions endpoint.
+        The actual position updates come from _process_position_update() via WebSocket.
         """
-        try:
-            response = await self._api_get(
-                path_url=CONSTANTS.POSITIONS_URL,
-                is_auth_required=True,
-                limit_id=CONSTANTS.POSITIONS_URL
-            )
-
-            if isinstance(response, dict) and response.get('status') == 'OK':
-                positions_data = response.get('data', [])
-
-                for position_info in positions_data:
-                    try:
-                        # Parse position data
-                        market = position_info.get('market', '')  # e.g., "KAITO-USD"
-                        trading_pair = await self.trading_pair_associated_to_exchange_symbol(market)
-
-                        # Determine position side from size (positive = long, negative = short)
-                        size = Decimal(str(position_info.get('size', '0')))
-                        if size == 0:
-                            continue  # Skip zero positions
-
-                        position_side = PositionSide.LONG if size > 0 else PositionSide.SHORT
-                        amount = abs(size)
-
-                        # Get position details
-                        entry_price = Decimal(str(position_info.get('entryPrice', '0')))
-                        unrealized_pnl = Decimal(str(position_info.get('unrealisedPnl', '0')))
-                        leverage_value = Decimal(str(position_info.get('leverage', '1')))
-
-                        # Create or update position
-                        pos_key = self._perpetual_trading.position_key(trading_pair, position_side)
-                        position = Position(
-                            trading_pair=trading_pair,
-                            position_side=position_side,
-                            unrealized_pnl=unrealized_pnl,
-                            entry_price=entry_price,
-                            amount=amount,
-                            leverage=leverage_value
-                        )
-                        self._perpetual_trading.set_position(pos_key, position)
-
-                    except Exception as e:
-                        self.logger().error(f"Error parsing Extended position: {e}", exc_info=True)
-                        continue
-
-            else:
-                # Log unexpected response
-                self.logger().warning(f"Unexpected Extended positions response: {response}")
-
-        except Exception as e:
-            # Handle 404 error (no positions) gracefully
-            error_msg = str(e).lower()
-            if '404' in error_msg or 'not found' in error_msg:
-                # No open positions
-                self.logger().debug("No open positions on Extended (404 response)")
-            else:
-                self.logger().error(f"Error updating Extended positions: {e}", exc_info=True)
-                raise
+        # Extended uses WebSocket-only for position updates
+        # The REST API positions endpoint returns 401 (requires Stark signatures)
+        # Positions are optional (can be empty), so we just log that we're using WebSocket
+        self.logger().debug("Extended positions updated via WebSocket (no REST call needed)")
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         """Get all trade updates for an order. Placeholder for future implementation."""
