@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HUMMINGBOT_ROOT="$(dirname "$SCRIPT_DIR")"
+HUMMINGBOT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 echo "╔════════════════════════════════════════════════════════════════════════════╗"
 echo "║         Extended Exchange Streaming Tests - Side-by-Side Runner           ║"
@@ -42,10 +42,10 @@ run_with_tmux() {
         tmux split-window -h -t extended_tests
 
         # Run WebSocket test in left pane
-        tmux send-keys -t extended_tests:0.0 "cd $HUMMINGBOT_ROOT && python scripts/test_extended_websocket.py" C-m
+        tmux send-keys -t extended_tests:0.0 "cd $HUMMINGBOT_ROOT && python test/extended_connector/test_websocket_streaming.py" C-m
 
         # Run HTTP streaming test in right pane
-        tmux send-keys -t extended_tests:0.1 "cd $HUMMINGBOT_ROOT && python scripts/test_extended_http_stream.py" C-m
+        tmux send-keys -t extended_tests:0.1 "cd $HUMMINGBOT_ROOT && python test/extended_connector/test_http_sse_account_stream.py" C-m
 
         # Attach to session
         tmux attach-session -t extended_tests
@@ -64,7 +64,7 @@ run_sequential() {
     echo ""
 
     cd "$HUMMINGBOT_ROOT"
-    python scripts/test_extended_websocket.py
+    python test/extended_connector/test_websocket_streaming.py
 
     echo ""
     echo "═══════════════════════════════════════════════════════════════════════════"
@@ -72,7 +72,7 @@ run_sequential() {
     echo "═══════════════════════════════════════════════════════════════════════════"
     echo ""
 
-    python scripts/test_extended_http_stream.py
+    python test/extended_connector/test_http_sse_account_stream.py
 }
 
 # Ask user for preference
@@ -99,7 +99,7 @@ case $choice in
         echo "═══════════════════════════════════════════════════════════════════════════"
         echo ""
         cd "$HUMMINGBOT_ROOT"
-        python scripts/test_extended_websocket.py
+        python test/extended_connector/test_websocket_streaming.py
         ;;
     4)
         echo ""
@@ -108,7 +108,7 @@ case $choice in
         echo "═══════════════════════════════════════════════════════════════════════════"
         echo ""
         cd "$HUMMINGBOT_ROOT"
-        python scripts/test_extended_http_stream.py
+        python test/extended_connector/test_http_sse_account_stream.py
         ;;
     *)
         echo "❌ Invalid choice"
