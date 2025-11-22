@@ -55,12 +55,9 @@ class ETHKeyFileSecretManger(BaseSecretsManager):
     def decrypt_secret_value(self, attr: str, value: str) -> str:
         if self._password is None:
             raise ValueError(f"Could not decrypt secret attribute {attr} because no password was provided.")
-        try:
-            value = binascii.unhexlify(value)
-            decrypted_value = Account.decrypt(value.decode(), self._password).decode()
-            return decrypted_value
-        except UnicodeDecodeError as e:
-            raise ValueError(f"Could not decrypt secret attribute {attr}: encoding error - {str(e)}") from e
+        value = binascii.unhexlify(value)
+        decrypted_value = Account.decrypt(value.decode(), self._password).decode()
+        return decrypted_value
 
 
 def store_password_verification(secrets_manager: BaseSecretsManager):
