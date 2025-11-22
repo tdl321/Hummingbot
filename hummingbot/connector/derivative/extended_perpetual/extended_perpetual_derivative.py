@@ -607,29 +607,40 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
             )
 
     async def _user_stream_event_listener(self):
-        """Listen to user stream events."""
-        # This will process events from the user stream data source
-        # Implementation depends on Extended's WebSocket format
+        """
+        Listen to user stream events from WebSocket.
+
+        Extended WebSocket message format:
+        {
+            "type": "BALANCE" | "ORDER" | "POSITION" | "FUNDING",
+            "data": {
+                "isSnapshot": true/false,
+                ... type-specific data
+            },
+            "ts": timestamp_ms,
+            "seq": sequence_number
+        }
+        """
         async for event_message in self._iter_user_event_queue():
             try:
-                # Process different event types
-                event_type = event_message.get("type", "")
+                # Process different event types from WebSocket
+                event_type = event_message.get("type", "").upper()
 
-                if event_type == "order_update":
-                    self._process_order_update(event_message)
-                elif event_type == "position_update":
-                    self._process_position_update(event_message)
-                elif event_type == "balance_update":
+                if event_type == "BALANCE":
                     self._process_balance_update(event_message)
-                elif event_type == "funding_payment":
+                elif event_type == "ORDER":
+                    self._process_order_update(event_message)
+                elif event_type == "POSITION":
+                    self._process_position_update(event_message)
+                elif event_type == "FUNDING":
                     self._process_funding_payment(event_message)
                 else:
-                    self.logger().debug(f"Unknown user stream event type: {event_type}")
+                    self.logger().debug(f"Unknown Extended WebSocket message type: {event_type}")
 
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.logger().error(f"Error processing user stream event: {e}", exc_info=True)
+                self.logger().error(f"Error processing Extended WebSocket event: {e}", exc_info=True)
 
     def _process_order_update(self, order_update: Dict[str, Any]):
         """Process order update from user stream."""
@@ -642,9 +653,58 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
         pass
 
     def _process_balance_update(self, balance_update: Dict[str, Any]):
-        """Process balance update from user stream."""
-        # TODO: Implement balance update processing
-        pass
+        """
+        Process balance update from WebSocket.
+
+        Extended WebSocket balance message format:
+        {
+            "type": "BALANCE",
+            "data": {
+                "isSnapshot": true/false,
+                "balance": {
+                    "collateralName": "USD",
+                    "balance": "7.667333",
+                    "equity": "7.667333",
+                    "availableForTrade": "7.667333",
+                    "availableForWithdrawal": "7.667333",
+                    "unrealisedPnl": "0.000000",
+                    "initialMargin": "0.000000",
+                    "marginRatio": "0",
+                    "leverage": "0.0000"
+                }
+            },
+            "ts": 1763797802075,
+            "seq": 2
+        }
+        """
+        try:
+            data = balance_update.get("data", {})
+            balance_data = data.get("balance", {})
+
+            if not balance_data:
+                self.logger().debug("Empty balance data in WebSocket message")
+                return
+
+            # Extract balance fields
+            quote = CONSTANTS.CURRENCY  # USD
+
+            # Use equity as total balance (includes unrealized PnL)
+            total_balance = Decimal(str(balance_data.get("equity", "0")))
+
+            # Use availableForTrade as available balance (can open new positions)
+            available_balance = Decimal(str(balance_data.get("availableForTrade", "0")))
+
+            # Update account balances
+            self._account_balances[quote] = total_balance
+            self._account_available_balances[quote] = available_balance
+
+            self.logger().info(
+                f"Extended balance updated via WebSocket - "
+                f"Total: {total_balance} {quote}, Available: {available_balance} {quote}"
+            )
+
+        except Exception as e:
+            self.logger().error(f"Error processing Extended balance update: {e}", exc_info=True)
 
     def _process_funding_payment(self, funding_payment: Dict[str, Any]):
         """Process funding payment from user stream."""

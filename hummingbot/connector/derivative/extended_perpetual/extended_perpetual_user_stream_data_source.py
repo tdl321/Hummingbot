@@ -43,40 +43,45 @@ class ExtendedPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
 
     async def listen_for_user_stream(self, output: asyncio.Queue):
         """
-        Main loop for listening to user stream via HTTP streaming (Server-Sent Events).
+        Main loop for listening to user stream via WebSocket.
 
-        Extended uses HTTP GET streaming with authentication instead of WebSocket.
+        Extended uses WebSocket for real-time account updates including:
+        - Order updates
+        - Position updates
+        - Balance updates
+        - Funding payments
 
         Args:
             output: Queue to put received messages
         """
         while True:
-            stream_response = None
+            ws: Optional[WSAssistant] = None
             try:
-                # Connect to authenticated HTTP stream
-                stream_response = await self._connect_account_stream()
-                self.logger().info("Connected to Extended account stream")
+                # Connect to WebSocket
+                ws = await self._get_ws_assistant()
+                self.logger().info("Connected to Extended WebSocket account stream")
 
-                # Read and process streaming messages
-                async for message in self._read_stream_messages(stream_response):
-                    # Extended sends messages with types: ORDER, TRADE, BALANCE, POSITION
+                # Listen for messages
+                async for ws_response in ws.iter_messages():
+                    data = ws_response.data
+
+                    # Parse WebSocket message
+                    if isinstance(data, str):
+                        message = json.loads(data)
+                    else:
+                        message = data
+
+                    # Extended sends messages with structure:
+                    # {"type": "BALANCE/ORDER/POSITION/FUNDING", "data": {...}, "ts": ..., "seq": ...}
                     # Forward all messages to output queue
                     output.put_nowait(message)
 
             except asyncio.CancelledError:
                 raise
-            except ConnectionError as e:
-                self.logger().warning(f"Account stream connection closed: {e}")
             except Exception:
-                self.logger().error("Unexpected error in Extended user stream listener.", exc_info=True)
+                self.logger().error("Unexpected error in Extended WebSocket listener.", exc_info=True)
+                await self._on_user_stream_interruption(ws)
                 await self._sleep(5.0)
-            finally:
-                # Close stream connection if open
-                if stream_response is not None:
-                    try:
-                        await stream_response._aiohttp_response.close()
-                    except Exception:
-                        pass
 
     async def _connect_account_stream(self) -> RESTResponse:
         """
@@ -150,15 +155,34 @@ class ExtendedPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
 
     async def _get_ws_assistant(self) -> WSAssistant:
         """
-        DEPRECATED: Extended uses HTTP streaming, not WebSocket.
+        Get or create WebSocket assistant for Extended account stream.
 
-        This method is kept for compatibility but should not be used.
+        Extended WebSocket authentication uses API key as query parameter.
+
+        Returns:
+            WSAssistant connected to Extended account stream
         """
         if self._ws_assistant is None:
             self._ws_assistant = await self._api_factory.get_ws_assistant()
-            # Connect to Extended WebSocket
-            ws_url = web_utils.wss_url(self._domain)
-            await self._ws_assistant.connect(ws_url=ws_url, ping_timeout=CONSTANTS.HEARTBEAT_TIME_INTERVAL)
+
+            # Get API key from connector
+            api_key = self._connector.extended_perpetual_api_key
+            if not api_key:
+                raise ValueError("API key required for WebSocket authentication")
+
+            # Construct WebSocket URL with API key authentication
+            # Format: wss://starknet.app.extended.exchange/stream.extended.exchange/v1/account?X-API-KEY=...
+            base_url = CONSTANTS.PERPETUAL_WS_URL
+            ws_url = f"{base_url}?X-API-KEY={api_key}"
+
+            # Connect to WebSocket
+            await self._ws_assistant.connect(
+                ws_url=ws_url,
+                ping_timeout=CONSTANTS.HEARTBEAT_TIME_INTERVAL
+            )
+
+            self.logger().info("Extended WebSocket connected successfully")
+
         return self._ws_assistant
 
     async def _subscribe_to_channels(self, ws: WSAssistant):
@@ -188,10 +212,12 @@ class ExtendedPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
 
     async def _on_user_stream_interruption(self, ws: Optional[WSAssistant]):
         """
-        DEPRECATED: Extended uses HTTP streaming, not WebSocket.
+        Handle WebSocket interruption and cleanup.
 
-        Handle WebSocket interruption.
+        Args:
+            ws: WebSocket assistant to disconnect
         """
         if ws is not None:
             await ws.disconnect()
         self._ws_assistant = None
+        self.logger().info("Extended WebSocket disconnected, will reconnect...")

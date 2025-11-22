@@ -10,11 +10,11 @@ DOMAIN = EXCHANGE_NAME
 # Base URLs - MAINNET ONLY
 PERPETUAL_BASE_URL = "https://api.starknet.extended.exchange"
 
-# HTTP Streaming URLs (Extended uses HTTPS GET streaming, not WebSocket)
-PERPETUAL_STREAM_URL = "https://stream.extended.exchange"
+# WebSocket URLs (Extended uses WebSocket for real-time account updates)
+PERPETUAL_WS_URL = "wss://starknet.app.extended.exchange/stream.extended.exchange/v1/account"
 
-# WebSocket URLs (DEPRECATED - Extended uses HTTP streaming instead)
-PERPETUAL_WS_URL = "wss://api.starknet.extended.exchange/stream.extended.exchange/v1"
+# HTTP Streaming URLs (DEPRECATED - migrated to WebSocket)
+PERPETUAL_STREAM_URL = "https://stream.extended.exchange"
 
 # Funding rate update interval (30 seconds for Extended)
 # Note: Extended funding payments occur every 8 hours, but we poll rates every 30s for faster arbitrage detection
