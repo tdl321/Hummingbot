@@ -731,9 +731,34 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
         """Update trading fees. Placeholder for future implementation."""
         pass
 
+    async def _status_polling_loop_fetch_updates(self):
+        """
+        Override base class polling to skip REST balance and position updates.
+
+        Extended uses WebSocket for real-time account updates including:
+        - Balance updates (type: BALANCE)
+        - Position updates (type: POSITION)
+
+        The WebSocket sends initial snapshots upon connection and incremental
+        updates thereafter, so we don't need REST polling for these data types.
+
+        This prevents 401 errors from continuous REST API polling while still
+        updating order status via REST.
+        """
+        await safe_gather(
+            # Skip _update_positions() - positions come via WebSocket
+            # Skip _update_balances() - balances come via WebSocket
+            self._update_order_status(),
+        )
+
     async def _update_balances(self):
         """
         Update account balances from Extended API.
+
+        NOTE: This method is NOT called during normal operation because we override
+        _status_polling_loop_fetch_updates to skip it. Balance updates come via WebSocket.
+
+        This method remains for backward compatibility or manual calls if needed.
 
         Fetches balance data from /api/v1/user/balance endpoint.
         Returns 404 if balance is zero (new account).
@@ -787,6 +812,11 @@ class ExtendedPerpetualDerivative(PerpetualDerivativePyBase):
     async def _update_positions(self):
         """
         Update positions from Extended API.
+
+        NOTE: This method is NOT called during normal operation because we override
+        _status_polling_loop_fetch_updates to skip it. Position updates come via WebSocket.
+
+        This method remains for backward compatibility or manual calls if needed.
 
         Fetches active positions from /api/v1/user/positions endpoint.
         """
